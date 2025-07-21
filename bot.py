@@ -1,13 +1,14 @@
 import asyncio
+import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
 import aiosqlite
 
-import os
-import os
-ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+if not TOKEN:
+    TOKEN = "7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U"  # <-- замените на свой токен
+
 ADMIN_ID = 760746564
 DB_PATH = 'volleyball.db'
 
@@ -47,6 +48,11 @@ TEXTS = {
         'ru': "Введите имя и фамилию для записи:",
         'uk': "Введіть ім'я та прізвище для запису:",
         'en': "Enter name and surname for registration:"
+    },
+    'enter_username': {
+        'ru': "Введите ваш ник в Telegram (например, @nickname):",
+        'uk': "Введіть ваш нік в Telegram (наприклад, @nickname):",
+        'en': "Enter your Telegram username (e.g., @nickname):"
     },
     'registered': {
         'ru': "Записано!",
@@ -242,7 +248,17 @@ async def register(callback: CallbackQuery):
     if callback.from_user.id not in user_states:
         user_states[callback.from_user.id] = {'lang': lang}
     user_states[callback.from_user.id]['registering'] = game_id
-    await callback.message.answer(TEXTS['enter_name'][lang])
+
+    # Проверка: есть ли записи пользователя в базе
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute('SELECT COUNT(*) FROM registrations WHERE user_id = ?', (callback.from_user.id,))
+        count = (await cursor.fetchone())[0]
+
+    if count == 0:
+        user_states[callback.from_user.id]['need_username'] = True
+        await callback.message.answer(TEXTS['enter_username'][lang])
+    else:
+        await callback.message.answer(TEXTS['enter_name'][lang])
 
 @dp.message(F.text.in_([
     '👥 Просмотреть записи', '👥 Переглянути записи', '👥 View registrations'
@@ -401,13 +417,23 @@ async def handle_messages(message: Message):
     state = user_states.get(message.from_user.id, {})
     if 'registering' in state:
         game_id = state['registering']
+        # Если нужен ник, сначала сохраняем его
+        if state.get('need_username'):
+            username = message.text.strip()
+            user_states[message.from_user.id]['username'] = username
+            user_states[message.from_user.id].pop('need_username')
+            await message.answer(TEXTS['enter_name'][lang])
+            return
+        # Далее обычная запись
         full_name = message.text.strip()
+        username = state.get('username', message.from_user.username or '')
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute('INSERT INTO registrations (game_id, user_id, username, full_name, paid) VALUES (?, ?, ?, ?, ?)',
-                             (game_id, message.from_user.id, message.from_user.username or '', full_name, 0))
+                             (game_id, message.from_user.id, username, full_name, 0))
             await db.commit()
         await message.answer(TEXTS['registered'][lang], reply_markup=reply_menu(message.from_user.id == ADMIN_ID, lang=lang))
         user_states[message.from_user.id].pop('registering', None)
+        user_states[message.from_user.id].pop('username', None)
     elif message.text and message.text.startswith('/togglepaid_'):
         if message.from_user.id != ADMIN_ID:
             await message.answer(TEXTS['no_access'][lang])
@@ -431,6 +457,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    if not TOKEN:
-        raise ValueError("Bot token not found. Please set the TELEGRAM_BOT_TOKEN environment variable.")
     asyncio.run(main())
