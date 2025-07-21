@@ -4,7 +4,10 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
 import aiosqlite
 
-TOKEN = '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
+import os
+import os
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = 760746564
 DB_PATH = 'volleyball.db'
 
@@ -428,4 +431,6 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    if not TOKEN:
+        raise ValueError("Bot token not found. Please set the TELEGRAM_BOT_TOKEN environment variable.")
     asyncio.run(main())
