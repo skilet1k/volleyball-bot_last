@@ -964,18 +964,18 @@ if __name__ == "__main__":
     async def on_startup(dispatcher):
         await init_db()
 
-    # Minimal HTTP server for Render health check
-    async def handle(request):
-        return web.Response(text="OK")
 
-    def run_web():
-        app = web.Application()
-        app.router.add_get("/", handle)
-        port = int(os.environ.get("PORT", 10000))
-        web.run_app(app, port=port)
-
-    # Start HTTP server in a separate thread
-    threading.Thread(target=run_web, daemon=True).start()
+    # For local development, comment out the HTTP server block below:
+    # async def handle(request):
+    #     return web.Response(text="OK")
+    #
+    # def run_web():
+    #     app = web.Application()
+    #     app.router.add_get("/", handle)
+    #     port = int(os.environ.get("PORT", 10000))
+    #     web.run_app(app, port=port)
+    #
+    # threading.Thread(target=run_web, daemon=True).start()
 
     dp.startup.register(on_startup)
     dp.run_polling(bot)
