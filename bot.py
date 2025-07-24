@@ -366,6 +366,15 @@ async def choose_prev(callback: CallbackQuery):
         if key not in seen:
             seen.add(key)
             unique_previous.append((name, username))
+    # Helper: delete previous bot message for user
+    async def delete_last_bot_message(user_id, chat):
+        msg_id = user_states.get(user_id, {}).get('last_bot_msg_id')
+        if msg_id:
+            try:
+                await bot.delete_message(chat.id, msg_id)
+            except Exception:
+                pass
+            user_states[user_id]['last_bot_msg_id'] = None
     await delete_last_bot_message(callback.from_user.id, callback.message.chat)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f'{name}', callback_data=f'prev_{name}_{username}') for name, username in unique_previous]
@@ -567,186 +576,7 @@ async def handle_messages(message: Message):
         '👥 Просмотреть записи', '👥 Переглянути записи', '👥 View registrations',
         '📝 Создать пост', '📝 Створити пост', '📝 Create post'
     ]
-    if message.text in main_menu_texts:
-        user_states[message.from_user.id] = {'lang': lang}
-        # Исправление: если выбрана '❌ Удалить игру', показать список игр для удаления
-        if message.text in ['❌ Удалить игру', '❌ Видалити гру', '❌ Delete game']:
-            pool = await get_pg_pool()
-            async with pool.acquire() as conn:
-                games = await conn.fetch('SELECT id, date, time_start, time_end, place FROM games')
-            if not games:
-                await message.answer(TEXTS['delete_game_empty'][lang])
-                return
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=f"{game['date']} {game['time_start']}-{game['time_end']} {game['place']}", callback_data=f"delgame_{game['id']}")]
-                for game in games
-            ])
-            await message.answer(TEXTS['delete_game_choose'][lang], reply_markup=kb)
-            return
-    main_menu_texts = [
-        '📅 Расписание', '📅 Розклад', '📅 Schedule',
-        '🎟 Мои записи', '🎟 Мої записи', '🎟 My records',
-        '⚙️ Параметры', '⚙️ Параметри', '⚙️ Parameters',
-        '➕ Добавить игру', '➕ Додати гру', '➕ Add game',
-        '❌ Удалить игру', '❌ Видалити гру', '❌ Delete game',
-        '👥 Просмотреть записи', '👥 Переглянути записи', '👥 View registrations',
-        '📝 Создать пост', '📝 Створити пост', '📝 Create post'
-    ]
-    if message.text in main_menu_texts:
-        user_states[message.from_user.id] = {'lang': lang}
-    # --- Создать пост ---
-    if message.text in ['📝 Создать пост', '📝 Створити пост', '📝 Create post']:
-        await create_post_start(message)
-        return
-    if user_states.get(message.from_user.id, {}).get('create_post'):
-        user_states[message.from_user.id]['post_text'] = message.text
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='Добавить кнопку "Расписание"', callback_data='add_schedule_btn')],
-            [InlineKeyboardButton(text='Без кнопки', callback_data='no_btn')]
-        ])
-        await message.answer('Добавить кнопку к посту?', reply_markup=kb)
-        return
-
-    # Добавление игры с кнопкой "Отмена"
-    if message.from_user.id in add_game_states:
-        state = add_game_states[message.from_user.id]
-        step = state['step']
-        if message.text == 'Отмена':
-            add_game_states.pop(message.from_user.id, None)
-            await message.answer('Создание игры отменено.', reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
-            return
-        if step == 'date':
-            state['date'] = message.text.strip()
-            state['step'] = 'extra_info'
-            await message.answer({'ru':'Если хотите, добавьте дополнительную информацию (или пропустите):','uk':'За бажанням, додайте додаткову інформацію (або пропустіть):','en':'Optionally, add extra info (or skip):'}[lang])
-            return
-        elif step == 'extra_info':
-            state['extra_info'] = message.text.strip()
-            state['step'] = 'time_start'
-            await message.answer(TEXTS['add_game_time_start'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
-        elif step == 'time_start':
-            state['time_start'] = message.text.strip()
-            state['step'] = 'time_end'
-            await message.answer(TEXTS['add_game_time_end'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
-        elif step == 'time_end':
-            state['time_end'] = message.text.strip()
-            state['step'] = 'place'
-            await message.answer(TEXTS['add_game_place'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
-        elif step == 'place':
-            state['place'] = message.text.strip()
-            state['step'] = 'price'
-            await message.answer(TEXTS['add_game_price'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
-        elif step == 'price':
-            try:
-                price = int(message.text.strip())
-            except ValueError:
-                await message.answer(TEXTS['add_game_price_error'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
-                return
-            state['price'] = price
-            pool = await get_pg_pool()
-            async with pool.acquire() as conn:
-                await conn.execute('INSERT INTO games (date, time_start, time_end, place, price, extra_info) VALUES ($1, $2, $3, $4, $5, $6)',
-                                   state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state.get('extra_info', ''))
-            await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
-            add_game_states.pop(message.from_user.id, None)
-        return
-
-    state = user_states.get(message.from_user.id, {})
-    # --- Admin schedule edit mode ---
-    if 'edit_game_id' in state:
-        game_id = state['edit_game_id']
-        # Expecting: date\ntime_start\ntime_end\nplace\nprice
-        parts = message.text.strip().split('\n')
-        if len(parts) != 5:
-            await message.answer({'ru':'Ошибка! Введите расписание в формате:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена',
-                                 'uk':'Помилка! Введіть розклад у форматі:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна',
-                                 'en':'Error! Enter schedule in format:\nDate\nStart time\nEnd time\nPlace\nPrice'}[lang])
-            return
-        date, time_start, time_end, place, price = parts
-        try:
-            price_int = int(price)
-        except ValueError:
-            await message.answer({'ru':'Ошибка! Цена должна быть числом.',
-                                 'uk':'Помилка! Ціна повинна бути числом.',
-                                 'en':'Error! Price must be a number.'}[lang])
-            return
-        pool = await get_pg_pool()
-        async with pool.acquire() as conn:
-            await conn.execute('UPDATE games SET date = $1, time_start = $2, time_end = $3, place = $4, price = $5 WHERE id = $6',
-                               date, time_start, time_end, place, price_int, game_id)
-        user_states[message.from_user.id].pop('edit_game_id', None)
-        await message.answer({'ru':'Расписание игры обновлено.','uk':'Розклад гри оновлено.','en':'Game schedule updated.'}[lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
-        return
-    # --- Registration flow ---
-    if 'registering' in state:
-        step = state.get('step')
-        if step == 'name':
-            user_states[message.from_user.id]['full_name'] = message.text.strip()
-            user_states[message.from_user.id]['step'] = 'username_choice'
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text={'ru':'Вставить мой автоматически','uk':'Вставити мій автоматично','en':'Insert mine automatically'}[lang], callback_data='auto_username')],
-                [InlineKeyboardButton(text={'ru':'Ввести вручную','uk':'Двести вручну','en':'Enter manually'}[lang], callback_data='manual_username')]
-            ])
-            await message.answer({'ru':'Выберите способ ввода username:','uk':'Виберіть спосіб введення username:','en':'Choose username input method:'}[lang], reply_markup=kb)
-            return
-        elif step == 'username':
-            username = message.text.strip()
-            if not username.startswith('@') or len(username) < 5:
-                await message.answer({'ru':'Username должен начинаться с @ и быть не короче 5 символов. Скопируйте его из своего профиля Telegram.',
-                                     'uk':'Username повинен починатися з @ і бути не коротше 5 символів. Скопіюйте його зі свого профілю Telegram.',
-                                     'en':'Username must start with @ and be at least 5 characters. Copy it from your Telegram profile.'}[lang])
-                await message.answer({'ru':'Пожалуйста, введите ваш username ещё раз:',
-                                     'uk':'Будь ласка, введіть ваш username ще раз:',
-                                     'en':'Please enter your username again:'}[lang])
-                return
-            # Проверка существования username через Telegram API
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                url = f"https://t.me/{username.lstrip('@')}"
-                async with session.get(url) as resp:
-                    page = await resp.text()
-            if 'If you have Telegram, you can contact' in page or 'Send Message' in page:
-                # username существует
-                user_states[message.from_user.id]['username'] = username
-                game_id = state['registering']
-                full_name = state['full_name']
-                pool = await get_pg_pool()
-                async with pool.acquire() as conn:
-                    await conn.execute('INSERT INTO registrations (game_id, user_id, username, full_name, paid) VALUES ($1, $2, $3, $4, $5)',
-                                       game_id, message.from_user.id, username, full_name, 0)
-                await message.answer(TEXTS['registered'][lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
-                user_states[message.from_user.id].pop('registering', None)
-                user_states[message.from_user.id].pop('full_name', None)
-                user_states[message.from_user.id].pop('username', None)
-                user_states[message.from_user.id].pop('step', None)
-                return
-            else:
-                await message.answer({'ru':'Такого username не существует в Telegram. Проверьте правильность и попробуйте ещё раз.',
-                                     'uk':'Такого username не існує в Telegram. Перевірте правильність і спробуйте ще раз.',
-                                     'en':'This username does not exist in Telegram. Check and try again.'}[lang])
-                await message.answer({'ru':'Скопируйте ваш username из профиля Telegram. Откройте свой профиль, он начинается с @.',
-                                     'uk':'Скопіюйте ваш username з профілю Telegram. Відкрийте свій профіль, він починається з @.',
-                                     'en':'Copy your username from your Telegram profile. It starts with @.'}[lang])
-                return
-        elif step == 'username_choice':
-            # Ожидается callback, не обрабатываем здесь
-            return
-    elif message.text and message.text.startswith('/togglepaid_'):
-        if message.from_user.id not in ADMIN_IDS:
-            await message.answer(TEXTS['no_access'][lang])
-            return
-        reg_id = int(message.text.split('_')[1])
-        pool = await get_pg_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT paid FROM registrations WHERE id = $1', reg_id)
-            if row is not None:
-                new_paid = 0 if row['paid'] == 1 else 1
-                await conn.execute('UPDATE registrations SET paid = $1 WHERE id = $2', new_paid, reg_id)
-                await message.answer(f"{TEXTS['paid_status_changed'][lang]} {'✅' if new_paid else '❌'}.")
-            else:
-                await message.answer(TEXTS['record_not_found'][lang])
-    else:
-        await message.answer(TEXTS['unknown_command'][lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
+    await message.answer(TEXTS['unknown_command'][lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
 # Callback для username выбора
 @dp.message(F.text.in_([
     '📝 Создать пост', '📝 Створити пост', '📝 Create post'
