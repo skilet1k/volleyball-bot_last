@@ -207,9 +207,21 @@ async def parameters_menu(message: Message):
         [InlineKeyboardButton(text=LANGUAGES['ru'], callback_data='lang_ru')],
         [InlineKeyboardButton(text=LANGUAGES['uk'], callback_data='lang_uk')],
         [InlineKeyboardButton(text=LANGUAGES['en'], callback_data='lang_en')],
-        [InlineKeyboardButton(text='Наши ресурсы', url='https://linktr.ee/volleyball_warsaw')],
-        [InlineKeyboardButton(text='Написать админу', url='https://t.me/hannazoria')],
-        [InlineKeyboardButton(text='Чат по волейболу', url='https://t.me/volleyball_warsaw')]
+        [InlineKeyboardButton(text={
+            'ru': 'Наши ресурсы',
+            'uk': 'Наші ресурси',
+            'en': 'Our resources'
+        }[lang], url='https://linktr.ee/volleyball_warsaw')],
+        [InlineKeyboardButton(text={
+            'ru': 'Написать админу',
+            'uk': 'Написати адміну',
+            'en': 'Contact admin'
+        }[lang], url='https://t.me/hannazoria')],
+        [InlineKeyboardButton(text={
+            'ru': 'Чат по волейболу',
+            'uk': 'Чат з волейболу',
+            'en': 'Volleyball chat'
+        }[lang], url='https://t.me/volleyball_warsaw')]
     ])
     await message.answer({'ru':'Выберите язык или ресурс:','uk':'Виберіть мову або ресурс:','en':'Choose language or resource:'}[lang], reply_markup=kb)
 
