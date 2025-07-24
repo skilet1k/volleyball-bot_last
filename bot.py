@@ -7,8 +7,6 @@ import asyncpg
 import datetime
 
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-if not TOKEN:
-    TOKEN = "7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U"  # <-- замените на свой токен
 
 ADMIN_IDS = [760746564, 683243528, 1202044081]
 DB_DSN = os.getenv('POSTGRES_DSN') or 'postgresql://postgres:postgres@localhost:5432/volleyball'
