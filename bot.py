@@ -579,10 +579,11 @@ async def editgame(callback: CallbackQuery):
         date, time_start, time_end, place, price = game['date'], game['time_start'], game['time_end'], game['place'], game['price']
         current_text = (
             {'ru':"Текущее расписание:", 'uk':"Поточний розклад:", 'en':"Current schedule:"}[lang] + "\n"
-            + {'ru':f"Дата: {date}\nВремя начала: {time_start}\nВремя окончания: {time_end}\nМесто: {place}\nЦена: {price} PLN\n\nВведите новое расписание в формате:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена",
-                'uk':f"Дата: {date}\nЧас початку: {time_start}\nЧас закінчення: {time_end}\nМісце: {place}\nЦіна: {price} PLN\n\nВведіть новий розклад у форматі:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна",
-                'en':f"Date: {date}\nStart time: {time_start}\nEnd time: {time_end}\nPlace: {place}\nPrice: {price} PLN\n\nEnter new schedule in format:\nDate\nStart time\nEnd time\nPlace\nPrice"}[lang]
+            + {'ru':f"Дата: {date}\nВремя начала: {time_start}\nВремя окончания: {time_end}\nМесто: {place}\nЦена: {price} PLN\n\nВведите новое расписание в формате:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена\nЗаметки (опционально)",
+                'uk':f"Дата: {date}\nЧас початку: {time_start}\nЧас закінчення: {time_end}\nМісце: {place}\nЦіна: {price} PLN\n\nВведіть новий розклад у форматі:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна\nНотатки (опціонально)",
+                'en':f"Date: {date}\nStart time: {time_start}\nEnd time: {time_end}\nPlace: {place}\nPrice: {price} PLN\n\nEnter new schedule in format:\nDate\nStart time\nEnd time\nPlace\nPrice\nExtra info (optional)"}[lang]
         )
+        user_states[callback.from_user.id]['edit_game_mode'] = True
         await callback.message.answer(current_text)
     else:
         await callback.message.answer({'ru':'Игра не найдена.','uk':'Гру не знайдено.','en':'Game not found.'}[lang])
@@ -633,6 +634,28 @@ async def handle_messages(message: Message):
                                    state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state['extra_info'])
             add_game_states.pop(user_id, None)
             await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
+        return
+    # Если админ редактирует игру
+    if user_states.get(user_id, {}).get('edit_game_mode'):
+        edit_game_id = user_states[user_id].get('edit_game_id')
+        lines = message.text.strip().split('\n')
+        if len(lines) < 5:
+            await message.answer({'ru':'Ошибка: нужно минимум 5 строк (дата, время начала, время окончания, место, цена).','uk':'Помилка: потрібно мінімум 5 рядків (дата, час початку, час закінчення, місце, ціна).','en':'Error: at least 5 lines required (date, start time, end time, place, price).'}[lang])
+            return
+        date, time_start, time_end, place, price = lines[:5]
+        extra_info = '\n'.join(lines[5:]).strip() if len(lines) > 5 else ''
+        try:
+            price = int(price)
+        except Exception:
+            await message.answer(TEXTS['add_game_price_error'][lang])
+            return
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute('UPDATE games SET date=$1, time_start=$2, time_end=$3, place=$4, price=$5, extra_info=$6 WHERE id=$7',
+                               date, time_start, time_end, place, price, extra_info, edit_game_id)
+        user_states[user_id].pop('edit_game_mode', None)
+        user_states[user_id].pop('edit_game_id', None)
+        await message.answer({'ru':'Расписание обновлено!','uk':'Розклад оновлено!','en':'Schedule updated!'}[lang], reply_markup=reply_menu(user_id in ADMIN_IDS, lang=lang))
         return
     # ...existing code for unknown commands...
     # Handle 'Удалить игру' menu
