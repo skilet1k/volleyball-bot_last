@@ -172,15 +172,20 @@ def reply_menu(is_admin=False, lang='ru'):
 async def init_db():
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
+        # Ensure extra_info column exists in games table
         await conn.execute('''CREATE TABLE IF NOT EXISTS games (
             id SERIAL PRIMARY KEY,
             date TEXT,
             time_start TEXT,
             time_end TEXT,
             place TEXT,
-            price INTEGER,
-            extra_info TEXT
+            price INTEGER
         )''')
+        # Add extra_info column if missing
+        try:
+            await conn.execute('ALTER TABLE games ADD COLUMN extra_info TEXT')
+        except Exception:
+            pass  # Ignore if column already exists
         await conn.execute('''CREATE TABLE IF NOT EXISTS registrations (
             id SERIAL PRIMARY KEY,
             game_id INTEGER,
