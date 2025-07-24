@@ -1,3 +1,13 @@
-pythonVersion: 3.11
-buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-startCommand: "python bot.py"
+services:
+  - type: worker
+    name: volleyball-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: POSTGRES_DSN
+        sync: false
+    pythonVersion: 3.11
