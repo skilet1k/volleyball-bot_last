@@ -635,15 +635,33 @@ async def handle_messages(message: Message):
             await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
         return
     # ...existing code for unknown commands...
-    main_menu_texts = [
-        '📅 Расписание', '📅 Розклад', '📅 Schedule',
-        '🎟 Мои записи', '🎟 Мої записи', '🎟 My records',
-        '⚙️ Параметры', '⚙️ Параметри', '⚙️ Parameters',
-        '➕ Добавить игру', '➕ Додати гру', '➕ Add game',
-        '❌ Удалить игру', '❌ Видалити гру', '❌ Delete game',
-        '👥 Просмотреть записи', '👥 Переглянути записи', '👥 View registrations',
-        '📝 Создать пост', '📝 Створити пост', '📝 Create post'
-    ]
+    # Handle 'Удалить игру' menu
+    if message.text in ['❌ Удалить игру', '❌ Видалити гру', '❌ Delete game']:
+        if user_id not in ADMIN_IDS:
+            await message.answer(TEXTS['no_access'][lang])
+            return
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            games = await conn.fetch('SELECT id, date, time_start, time_end, place FROM games')
+            if not games:
+                await message.answer(TEXTS['delete_game_empty'][lang])
+                return
+            kb_rows = []
+            for game in games:
+                game_id, date, time_start, time_end, place = game['id'], game['date'], game['time_start'], game['time_end'], game['place']
+                kb_rows.append([InlineKeyboardButton(text=f"{date} {time_start}-{time_end} {place}", callback_data=f'delgame_{game_id}')])
+            kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+            await message.answer(TEXTS['delete_game_choose'][lang], reply_markup=kb)
+        return
+    # Handle 'Создать пост' menu
+    if message.text in ['📝 Создать пост', '📝 Створити пост', '📝 Create post']:
+        if user_id not in ADMIN_IDS:
+            await message.answer(TEXTS['no_access'][lang])
+            return
+        user_states[user_id] = user_states.get(user_id, {})
+        user_states[user_id]['create_post'] = True
+        await message.answer('Введите текст поста:')
+        return
     await message.answer(TEXTS['unknown_command'][lang], reply_markup=reply_menu(user_id in ADMIN_IDS, lang=lang))
 # Callback для username выбора
 @dp.message(F.text.in_([
@@ -684,13 +702,13 @@ async def show_schedule_btn(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
-        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price FROM games')
+        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price, extra_info FROM games')
     if not games:
         await callback.message.answer(TEXTS['schedule_empty'][lang])
         await callback.answer()
         return
-    for game in games:
-        game_id, date, time_start, time_end, place, price = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price']
+        for game in games:
+            game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
         # Определяем день недели
         try:
             day, month, year = map(int, date.split('.'))
@@ -750,11 +768,13 @@ async def show_schedule_btn(callback: CallbackQuery):
             date_no_year = '.'.join(date.split('.')[:2])
         except Exception:
             date_no_year = date
-        text = (f"📅 {date_no_year} ({weekday_str})\n"
-                f"⏰ {time_start} - {time_end}\n"
-                f"🏟️ {place_link}\n"
-                f"💵 {price} PLN\n"
-                f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
+            extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
+            text = (f"📅 {date_no_year} ({weekday_str})\n"
+                    f"⏰ {time_start} - {time_end}\n"
+                    f"🏟️ {place_link}\n"
+                    f"💵 {price} PLN\n"
+                    f"{extra_info_text}"
+                    f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
         ])
