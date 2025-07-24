@@ -269,13 +269,13 @@ async def show_schedule(message: Message):
 
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
-        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price FROM games')
+        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price, extra_info FROM games')
         if not games:
             await message.answer(TEXTS['schedule_empty'][lang])
             return
 
         for game in games:
-            game_id, date, time_start, time_end, place, price = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price']
+            game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
             # Определяем день недели и скрываем год
             try:
                 day, month, year = map(int, date.split('.'))
@@ -320,10 +320,12 @@ async def show_schedule(message: Message):
                     reg_text += f"R{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
             if not reg_text:
                 reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
+            extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
             text = (f"📅 {date_no_year} ({weekday_str})\n"
                     f"⏰ {time_start} - {time_end}\n"
                     f"🏟️ {place_link}\n"
                     f"💵 {price} PLN\n"
+                    f"{extra_info_text}"
                     f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
@@ -635,6 +637,15 @@ async def handle_messages(message: Message):
             add_game_states.pop(user_id, None)
             await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
         return
+    # Если админ создаёт пост
+    if user_states.get(user_id, {}).get('create_post'):
+        user_states[user_id]['post_text'] = message.text.strip()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='📅 Расписание', callback_data='add_schedule_btn')],
+            [InlineKeyboardButton(text='Без кнопки', callback_data='no_btn')]
+        ])
+        await message.answer({'ru':'Добавить кнопку расписания к посту?','uk':'Додати кнопку розкладу до посту?','en':'Add schedule button to post?'}[lang], reply_markup=kb)
+        return
     # Если админ редактирует игру
     if user_states.get(user_id, {}).get('edit_game_mode'):
         edit_game_id = user_states[user_id].get('edit_game_id')
@@ -732,65 +743,65 @@ async def show_schedule_btn(callback: CallbackQuery):
         return
         for game in games:
             game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
-        # Определяем день недели
-        try:
-            day, month, year = map(int, date.split('.'))
-            dt = datetime.date(year, month, day)
-            weekday = dt.strftime('%A')
-            weekday_ru = {
-                'Monday': 'Понедельник',
-                'Tuesday': 'Вторник',
-                'Wednesday': 'Среда',
-                'Thursday': 'Четверг',
-                'Friday': 'Пятница',
-                'Saturday': 'Суббота',
-                'Sunday': 'Воскресенье'
-            }
-            weekday_uk = {
-                'Monday': 'Понеділок',
-                'Tuesday': 'Вівторок',
-                'Wednesday': 'Середа',
-                'Thursday': 'Четвер',
-                'Friday': 'Пʼятниця',
-                'Saturday': 'Субота',
-                'Sunday': 'Неділя'
-            }
-            weekday_en = {
-                'Monday': 'Monday',
-                'Tuesday': 'Tuesday',
-                'Wednesday': 'Wednesday',
-                'Thursday': 'Thursday',
-                'Friday': 'Friday',
-                'Saturday': 'Saturday',
-                'Sunday': 'Sunday'
-            }
-            weekday_str = {'ru': weekday_ru, 'uk': weekday_uk, 'en': weekday_en}[lang][weekday]
-        except Exception:
-            weekday_str = ''
-        # Fetch registrations from PostgreSQL
-        registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
-        main_list = registrations[:14]
-        reserve_list = registrations[14:]
-        maps_url = f'https://www.google.com/maps/search/?api=1&query={place.replace(" ", "+")}'
-        place_link = f'<a href="{maps_url}">{place}</a>'
-        def name_link(name, username):
-            if username:
-                return f'<a href="https://t.me/{username.lstrip("@").strip()}">{name}</a>'
-            return name
-        reg_text = ""
-        for idx, r in enumerate(main_list, 1):
-            reg_text += f"{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
-        if reserve_list:
-            reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
-            for idx, r in enumerate(reserve_list, 1):
-                reg_text += f"R{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
-        if not reg_text:
-            reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
-        # Форматируем дату без года
-        try:
-            date_no_year = '.'.join(date.split('.')[:2])
-        except Exception:
-            date_no_year = date
+            # Определяем день недели
+            try:
+                day, month, year = map(int, date.split('.'))
+                dt = datetime.date(year, month, day)
+                weekday = dt.strftime('%A')
+                weekday_ru = {
+                    'Monday': 'Понедельник',
+                    'Tuesday': 'Вторник',
+                    'Wednesday': 'Среда',
+                    'Thursday': 'Четверг',
+                    'Friday': 'Пятница',
+                    'Saturday': 'Суббота',
+                    'Sunday': 'Воскресенье'
+                }
+                weekday_uk = {
+                    'Monday': 'Понеділок',
+                    'Tuesday': 'Вівторок',
+                    'Wednesday': 'Середа',
+                    'Thursday': 'Четвер',
+                    'Friday': 'Пʼятниця',
+                    'Saturday': 'Субота',
+                    'Sunday': 'Неділя'
+                }
+                weekday_en = {
+                    'Monday': 'Monday',
+                    'Tuesday': 'Tuesday',
+                    'Wednesday': 'Wednesday',
+                    'Thursday': 'Thursday',
+                    'Friday': 'Friday',
+                    'Saturday': 'Saturday',
+                    'Sunday': 'Sunday'
+                }
+                weekday_str = {'ru': weekday_ru, 'uk': weekday_uk, 'en': weekday_en}[lang][weekday]
+            except Exception:
+                weekday_str = ''
+            # Fetch registrations from PostgreSQL
+            registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
+            main_list = registrations[:14]
+            reserve_list = registrations[14:]
+            maps_url = f'https://www.google.com/maps/search/?api=1&query={place.replace(" ", "+")}'
+            place_link = f'<a href="{maps_url}">{place}</a>'
+            def name_link(name, username):
+                if username:
+                    return f'<a href="https://t.me/{username.lstrip("@").strip()}">{name}</a>'
+                return name
+            reg_text = ""
+            for idx, r in enumerate(main_list, 1):
+                reg_text += f"{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
+            if reserve_list:
+                reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
+                for idx, r in enumerate(reserve_list, 1):
+                    reg_text += f"R{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
+            if not reg_text:
+                reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
+            # Форматируем дату без года
+            try:
+                date_no_year = '.'.join(date.split('.')[:2])
+            except Exception:
+                date_no_year = date
             extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
             text = (f"📅 {date_no_year} ({weekday_str})\n"
                     f"⏰ {time_start} - {time_end}\n"
@@ -798,10 +809,10 @@ async def show_schedule_btn(callback: CallbackQuery):
                     f"💵 {price} PLN\n"
                     f"{extra_info_text}"
                     f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
-        ])
-        await callback.message.answer(text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
+            ])
+            await callback.message.answer(text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
     await callback.answer()
 
 # --- Авто-вставка username ---
