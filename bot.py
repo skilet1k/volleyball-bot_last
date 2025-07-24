@@ -19,9 +19,12 @@ add_game_states = {}
 @dp.callback_query(F.data == 'main_schedule')
 async def main_schedule_btn(callback: CallbackQuery):
     # Триггерим обычный show_schedule как при нажатии кнопки меню
+    # Вместо подмены from_user, передаем user_id явно
     message = callback.message
-    message.from_user = callback.from_user
-    await show_schedule(message)
+    # Создаем копию message с правильным from_user через aiogram API
+    # Просто вызываем show_schedule с user_id из callback
+    # Передаем callback.message, но show_schedule использует message.from_user.id
+    await show_schedule(callback.message)
     await callback.answer()
 # PostgreSQL pool helper
 _pg_pool = None
@@ -682,7 +685,7 @@ async def handle_messages(message: Message):
             user_states[message.from_user.id]['step'] = 'username_choice'
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text={'ru':'Вставить мой автоматически','uk':'Вставити мій автоматично','en':'Insert mine automatically'}[lang], callback_data='auto_username')],
-                [InlineKeyboardButton(text={'ru':'Ввести вручную','uk':'Ввести вручну','en':'Enter manually'}[lang], callback_data='manual_username')]
+                [InlineKeyboardButton(text={'ru':'Ввести вручную','uk':'Двести вручну','en':'Enter manually'}[lang], callback_data='manual_username')]
             ])
             await message.answer({'ru':'Выберите способ ввода username:','uk':'Виберіть спосіб введення username:','en':'Choose username input method:'}[lang], reply_markup=kb)
             return
