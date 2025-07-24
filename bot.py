@@ -15,6 +15,14 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 user_states = {}
 add_game_states = {}
+
+@dp.callback_query(F.data == 'main_schedule')
+async def main_schedule_btn(callback: CallbackQuery):
+    # Триггерим обычный show_schedule как при нажатии кнопки меню
+    message = callback.message
+    message.from_user = callback.from_user
+    await show_schedule(message)
+    await callback.answer()
 # PostgreSQL pool helper
 _pg_pool = None
 async def get_pg_pool():
@@ -167,7 +175,8 @@ async def init_db():
             time_start TEXT,
             time_end TEXT,
             place TEXT,
-            price INTEGER
+            price INTEGER,
+            extra_info TEXT
         )''')
         await conn.execute('''CREATE TABLE IF NOT EXISTS registrations (
             id SERIAL PRIMARY KEY,
@@ -195,6 +204,13 @@ async def start(message: Message):
     async with pool.acquire() as conn:
         await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', message.from_user.id, 'ru')
     await message.answer(TEXTS['welcome']['uk'], reply_markup=kb)
+    # Отправляем последний пост, если он есть
+    post_text = user_states.get('last_admin_post')
+    if post_text:
+        kb_post = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='📅 Расписание', callback_data='main_schedule')]
+        ])
+        await message.answer(post_text, reply_markup=kb_post)
 
 @dp.message(F.text.in_([
     '⚙️ Параметры', '⚙️ Параметри', '⚙️ Parameters'
@@ -250,71 +266,29 @@ async def show_schedule(message: Message):
 
         for game in games:
             game_id, date, time_start, time_end, place, price = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price']
-            # Определяем день недели
+            # Определяем день недели и скрываем год
             try:
                 day, month, year = map(int, date.split('.'))
                 dt = datetime.date(year, month, day)
                 weekday = dt.strftime('%A')
-                weekday_ru = {
-                    'Monday': 'Понедельник',
-                    'Tuesday': 'Вторник',
-                    'Wednesday': 'Среда',
-                    'Thursday': 'Четверг',
-                    'Friday': 'Пятница',
-                    'Saturday': 'Суббота',
-                    'Sunday': 'Воскресенье'
-                }
-                weekday_uk = {
-                    'Monday': 'Понеділок',
-                    'Tuesday': 'Вівторок',
-                    'Wednesday': 'Середа',
-                    'Thursday': 'Четвер',
-                    'Friday': 'Пʼятниця',
-                    'Saturday': 'Субота',
-                    'Sunday': 'Неділя'
-                }
-                weekday_en = {
-                    'Monday': 'Monday',
-                    'Tuesday': 'Tuesday',
-                    'Wednesday': 'Wednesday',
-                    'Thursday': 'Thursday',
-                    'Friday': 'Friday',
-                    'Saturday': 'Saturday',
-                    'Sunday': 'Sunday'
-                }
                 weekday_short_ru = {
-                    'Monday': 'пн',
-                    'Tuesday': 'вт',
-                    'Wednesday': 'ср',
-                    'Thursday': 'чт',
-                    'Friday': 'пт',
-                    'Saturday': 'сб',
-                    'Sunday': 'вс'
+                    'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'вс'
                 }
                 weekday_short_uk = {
-                    'Monday': 'пн',
-                    'Tuesday': 'вт',
-                    'Wednesday': 'ср',
-                    'Thursday': 'чт',
-                    'Friday': 'пт',
-                    'Saturday': 'сб',
-                    'Sunday': 'нд'
+                    'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'нд'
                 }
                 weekday_short_en = {
-                    'Monday': 'Mon',
-                    'Tuesday': 'Tue',
-                    'Wednesday': 'Wed',
-                    'Thursday': 'Thu',
-                    'Friday': 'Fri',
-                    'Saturday': 'Sat',
-                    'Sunday': 'Sun'
+                    'Monday': 'Mon', 'Tuesday': 'Tue', 'Wednesday': 'Wed', 'Thursday': 'Thu', 'Friday': 'Fri', 'Saturday': 'Sat', 'Sunday': 'Sun'
                 }
                 weekday_short_map = {'ru': weekday_short_ru, 'uk': weekday_short_uk, 'en': weekday_short_en}
                 weekday_str = weekday_short_map.get(lang, weekday_short_en).get(weekday)
                 if not weekday_str:
                     weekday_str = weekday_short_en.get(weekday, weekday)
+                # Форматируем дату без года
+                date_no_year = '.'.join(date.split('.')[:2])
             except Exception:
-                weekday_str = ''  # fallback: show nothing if parsing fails
+                weekday_str = ''
+                date_no_year = date
             registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
             main_list = registrations[:14]
             reserve_list = registrations[14:]
@@ -336,7 +310,7 @@ async def show_schedule(message: Message):
                     reg_text += f"R{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
             if not reg_text:
                 reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
-            text = (f"📅 {date} ({weekday_str})\n"
+            text = (f"📅 {date_no_year} ({weekday_str})\n"
                     f"⏰ {time_start} - {time_end}\n"
                     f"🏟️ {place_link}\n"
                     f"💵 {price} PLN\n"
@@ -640,6 +614,11 @@ async def handle_messages(message: Message):
             return
         if step == 'date':
             state['date'] = message.text.strip()
+            state['step'] = 'extra_info'
+            await message.answer({'ru':'Если хотите, добавьте дополнительную информацию (или пропустите):','uk':'За бажанням, додайте додаткову інформацію (або пропустіть):','en':'Optionally, add extra info (or skip):'}[lang])
+            return
+        elif step == 'extra_info':
+            state['extra_info'] = message.text.strip()
             state['step'] = 'time_start'
             await message.answer(TEXTS['add_game_time_start'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Отмена', callback_data='cancel_addgame')]]))
         elif step == 'time_start':
@@ -663,8 +642,8 @@ async def handle_messages(message: Message):
             state['price'] = price
             pool = await get_pg_pool()
             async with pool.acquire() as conn:
-                await conn.execute('INSERT INTO games (date, time_start, time_end, place, price) VALUES ($1, $2, $3, $4, $5)',
-                                   state['date'], state['time_start'], state['time_end'], state['place'], state['price'])
+                await conn.execute('INSERT INTO games (date, time_start, time_end, place, price, extra_info) VALUES ($1, $2, $3, $4, $5, $6)',
+                                   state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state.get('extra_info', ''))
             await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(message.from_user.id in ADMIN_IDS, lang=lang))
             add_game_states.pop(message.from_user.id, None)
         return
@@ -782,24 +761,12 @@ async def post_with_btn(callback: CallbackQuery):
     user_id = callback.from_user.id
     post_text = user_states.get(user_id, {}).get('post_text', '')
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📅 Расписание', callback_data='show_schedule')]
+        [InlineKeyboardButton(text='📅 Расписание', callback_data='main_schedule')]
     ])
-    # Получаем всех пользователей, которые когда-либо взаимодействовали с ботом
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        users = await conn.fetch('SELECT user_id FROM users')
-    # Если нет пользователей, отправляем только автору
-    if not users:
-        await callback.message.answer(post_text, reply_markup=kb)
-    else:
-        for user in users:
-            uid = user['user_id']
-            try:
-                await bot.send_message(uid, post_text, reply_markup=kb)
-            except Exception:
-                pass
+    await callback.message.answer(post_text, reply_markup=kb)
     user_states[user_id].pop('create_post', None)
     user_states[user_id].pop('post_text', None)
+    user_states['last_admin_post'] = post_text
     await callback.message.delete()
 
 @dp.callback_query(F.data == 'no_btn')
@@ -877,7 +844,12 @@ async def show_schedule_btn(callback: CallbackQuery):
                 reg_text += f"R{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
         if not reg_text:
             reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
-        text = (f"📅 {date} ({weekday_str})\n"
+        # Форматируем дату без года
+        try:
+            date_no_year = '.'.join(date.split('.')[:2])
+        except Exception:
+            date_no_year = date
+        text = (f"📅 {date_no_year} ({weekday_str})\n"
                 f"⏰ {time_start} - {time_end}\n"
                 f"🏟️ {place_link}\n"
                 f"💵 {price} PLN\n"
