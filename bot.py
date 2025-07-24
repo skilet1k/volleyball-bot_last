@@ -416,6 +416,68 @@ async def add_game_menu(message: Message):
     add_game_states[message.from_user.id] = {'step': 'date'}
     await message.answer(TEXTS['add_game_date'][lang], reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={'ru':'Отмена','uk':'Скасувати','en':'Cancel'}[lang], callback_data='cancel_addgame')]]))
 
+# --- Add game step handler ---
+@dp.message()
+async def add_game_steps(message: Message):
+    user_id = message.from_user.id
+    lang = get_lang(user_id)
+    if user_id not in add_game_states:
+        return
+    state = add_game_states[user_id]
+    step = state.get('step')
+    if step == 'date':
+        state['date'] = message.text.strip()
+        state['step'] = 'time_start'
+        await message.answer(TEXTS['add_game_time_start'][lang])
+    elif step == 'time_start':
+        state['time_start'] = message.text.strip()
+        state['step'] = 'time_end'
+        await message.answer(TEXTS['add_game_time_end'][lang])
+    elif step == 'time_end':
+        state['time_end'] = message.text.strip()
+        state['step'] = 'place'
+        await message.answer(TEXTS['add_game_place'][lang])
+    elif step == 'place':
+        state['place'] = message.text.strip()
+        state['step'] = 'price'
+        await message.answer(TEXTS['add_game_price'][lang])
+    elif step == 'price':
+        try:
+            state['price'] = int(message.text.strip())
+        except Exception:
+            await message.answer(TEXTS['add_game_price_error'][lang])
+            return
+        state['step'] = 'extra_info'
+        kb_skip = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={'ru':'Пропустить','uk':'Пропустити','en':'Skip'}[lang], callback_data='skip_extra_info')]])
+        await message.answer({'ru':'Введите заметки к игре (например, особенности, адрес, инвентарь):','uk':'Введіть нотатки до гри (наприклад, особливості, адреса, інвентар):','en':'Enter extra info for the game (e.g., details, address, equipment):'}[lang], reply_markup=kb_skip)
+    elif step == 'extra_info':
+        state['extra_info'] = message.text.strip()
+        # Save game to DB
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute('INSERT INTO games (date, time_start, time_end, place, price, extra_info) VALUES ($1, $2, $3, $4, $5, $6)',
+                               state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state['extra_info'])
+        add_game_states.pop(user_id, None)
+        await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
+
+# --- Skip extra info callback ---
+@dp.callback_query(F.data == 'skip_extra_info')
+async def skip_extra_info(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    lang = get_lang(user_id)
+    state = add_game_states.get(user_id)
+    if not state or state.get('step') != 'extra_info':
+        await callback.answer()
+        return
+    state['extra_info'] = ''
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO games (date, time_start, time_end, place, price, extra_info) VALUES ($1, $2, $3, $4, $5, $6)',
+                           state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state['extra_info'])
+    add_game_states.pop(user_id, None)
+    await callback.message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
+    await callback.answer()
+
 @dp.callback_query(F.data == 'cancel_addgame')
 async def cancel_addgame(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
