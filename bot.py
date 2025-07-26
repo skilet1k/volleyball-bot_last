@@ -1,3 +1,52 @@
+async def init_db():
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        # Ensure posts table exists
+        await conn.execute('''CREATE TABLE IF NOT EXISTS posts (
+            id SERIAL PRIMARY KEY,
+            text TEXT,
+            created_at TIMESTAMP
+        )''')
+        # Ensure extra_info column exists in games table
+        await conn.execute('''CREATE TABLE IF NOT EXISTS games (
+            id SERIAL PRIMARY KEY,
+            date TEXT,
+            time_start TEXT,
+            time_end TEXT,
+            place TEXT,
+            price INTEGER
+        )''')
+        # Add extra_info column if missing (safe check)
+        col_check = await conn.fetchval("SELECT column_name FROM information_schema.columns WHERE table_name='games' AND column_name='extra_info'")
+        if not col_check:
+            try:
+                await conn.execute('ALTER TABLE games ADD COLUMN extra_info TEXT')
+            except Exception:
+                pass  # Ignore if column already exists
+        await conn.execute('''CREATE TABLE IF NOT EXISTS registrations (
+            id SERIAL PRIMARY KEY,
+            game_id INTEGER,
+            user_id INTEGER,
+            username TEXT,
+            full_name TEXT,
+            paid INTEGER DEFAULT 0
+        )''')
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            lang TEXT
+        )''')
+def reply_menu(is_admin=False, lang='ru'):
+    buttons = [
+        [KeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang])],
+        [KeyboardButton(text={'ru':'🎟 Мои записи','uk':'🎟 Мої записи','en':'🎟 My records'}[lang])],
+        [KeyboardButton(text={'ru':'⚙️ Параметры','uk':'⚙️ Параметри','en':'⚙️ Parameters'}[lang])]
+    ]
+    if is_admin:
+        buttons.append([KeyboardButton(text={'ru':'➕ Добавить игру','uk':'➕ Додати гру','en':'➕ Add game'}[lang])])
+        buttons.append([KeyboardButton(text={'ru':'❌ Удалить игру','uk':'❌ Видалити гру','en':'❌ Delete game'}[lang])])
+        buttons.append([KeyboardButton(text={'ru':'👥 Просмотреть записи','uk':'👥 Переглянути записи','en':'👥 View registrations'}[lang])])
+        buttons.append([KeyboardButton(text={'ru':'📝 Создать пост','uk':'📝 Створити пост','en':'📝 Create post'}[lang])])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 import asyncio
 import os
 from aiogram import Bot, Dispatcher, types, F
@@ -18,12 +67,6 @@ add_game_states = {}
 
 @dp.callback_query(F.data == 'main_schedule')
 async def main_schedule_btn(callback: CallbackQuery):
-    # Триггерим обычный show_schedule как при нажатии кнопки меню
-    # Вместо подмены from_user, передаем user_id явно
-    message = callback.message
-    # Создаем копию message с правильным from_user через aiogram API
-    # Просто вызываем show_schedule с user_id из callback
-    # Передаем callback.message, но show_schedule использует message.from_user.id
     await show_schedule(callback.message)
     await callback.answer()
 # PostgreSQL pool helper
@@ -39,6 +82,43 @@ LANGUAGES = {
     'uk': 'Українська',
     'en': 'English'
 }
+    # --- Add game step handler is defined below ---
+
+# --- Delete game menu ---
+@dp.message(F.text.in_(['❌ Удалить игру','❌ Видалити гру','❌ Delete game']))
+async def delete_game_menu(message: Message):
+    lang = get_lang(message.from_user.id)
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer(TEXTS['no_access'][lang])
+        return
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        games = await conn.fetch('SELECT id, date, time_start, time_end, place FROM games')
+        if not games:
+            await message.answer(TEXTS['delete_game_empty'][lang])
+            return
+        kb_rows = []
+        for game in games:
+            game_id, date, time_start, time_end, place = game['id'], game['date'], game['time_start'], game['time_end'], game['place']
+            kb_rows.append([InlineKeyboardButton(text=f"{date} {time_start}-{time_end} {place}", callback_data=f'delgame_{game_id}')])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+        await message.answer(TEXTS['delete_game_choose'][lang], reply_markup=kb)
+
+# --- Create post menu ---
+@dp.message(F.text.in_(['📝 Создать пост','📝 Створити пост','📝 Create post']))
+async def create_post_menu(message: Message):
+    lang = get_lang(message.from_user.id)
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer(TEXTS['no_access'][lang])
+        return
+    user_id = message.from_user.id
+    # Preserve language in state if already set
+    lang_state = user_states.get(user_id, {}).get('lang', lang)
+    user_states[user_id] = {'step': 'create_post', 'lang': lang_state}
+    await message.answer({'ru':'Введите текст поста:','uk':'Введіть текст поста:','en':'Enter post text:'}[lang])
+
+# --- Create post step handler ---
+# ...existing code...
 
 TEXTS = {
     'welcome': {
@@ -155,72 +235,6 @@ TEXTS = {
 
 def get_lang(user_id):
     return user_states.get(user_id, {}).get('lang', 'ru')
-
-def reply_menu(is_admin=False, lang='ru'):
-    buttons = [
-        [KeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang])],
-        [KeyboardButton(text={'ru':'🎟 Мои записи','uk':'🎟 Мої записи','en':'🎟 My records'}[lang])],
-        [KeyboardButton(text={'ru':'⚙️ Параметры','uk':'⚙️ Параметри','en':'⚙️ Parameters'}[lang])]
-    ]
-    if is_admin:
-        buttons.append([KeyboardButton(text={'ru':'➕ Добавить игру','uk':'➕ Додати гру','en':'➕ Add game'}[lang])])
-        buttons.append([KeyboardButton(text={'ru':'❌ Удалить игру','uk':'❌ Видалити гру','en':'❌ Delete game'}[lang])])
-        buttons.append([KeyboardButton(text={'ru':'👥 Просмотреть записи','uk':'👥 Переглянути записи','en':'👥 View registrations'}[lang])])
-        buttons.append([KeyboardButton(text={'ru':'📝 Создать пост','uk':'📝 Створити пост','en':'📝 Create post'}[lang])])
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-async def init_db():
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        # Ensure extra_info column exists in games table
-        await conn.execute('''CREATE TABLE IF NOT EXISTS games (
-            id SERIAL PRIMARY KEY,
-            date TEXT,
-            time_start TEXT,
-            time_end TEXT,
-            place TEXT,
-            price INTEGER
-        )''')
-        # Add extra_info column if missing (safe check)
-        col_check = await conn.fetchval("SELECT column_name FROM information_schema.columns WHERE table_name='games' AND column_name='extra_info'")
-        if not col_check:
-            try:
-                await conn.execute('ALTER TABLE games ADD COLUMN extra_info TEXT')
-            except Exception:
-                pass  # Ignore if column already exists
-        await conn.execute('''CREATE TABLE IF NOT EXISTS registrations (
-            id SERIAL PRIMARY KEY,
-            game_id INTEGER,
-            user_id INTEGER,
-            username TEXT,
-            full_name TEXT,
-            paid INTEGER DEFAULT 0
-        )''')
-        await conn.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            lang TEXT
-        )''')
-
-@dp.message(CommandStart())
-async def start(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=LANGUAGES['ru'], callback_data='lang_ru')],
-        [InlineKeyboardButton(text=LANGUAGES['uk'], callback_data='lang_uk')],
-        [InlineKeyboardButton(text=LANGUAGES['en'], callback_data='lang_en')]
-    ])
-    user_states[message.from_user.id] = {}
-    # Сохраняем пользователя при /start
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', message.from_user.id, 'ru')
-    await message.answer(TEXTS['welcome']['uk'], reply_markup=kb)
-    # Отправляем последний пост, если он есть
-    post_text = user_states.get('last_admin_post')
-    if post_text:
-        kb_post = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='📅 Расписание', callback_data='main_schedule')]
-        ])
-        await message.answer(post_text, reply_markup=kb_post)
 
 @dp.message(F.text.in_([
     '⚙️ Параметры', '⚙️ Параметри', '⚙️ Parameters'
@@ -579,14 +593,22 @@ async def editgame(callback: CallbackQuery):
         game = await conn.fetchrow('SELECT date, time_start, time_end, place, price FROM games WHERE id = $1', game_id)
     if game:
         date, time_start, time_end, place, price = game['date'], game['time_start'], game['time_end'], game['place'], game['price']
-        current_text = (
-            {'ru':"Текущее расписание:", 'uk':"Поточний розклад:", 'en':"Current schedule:"}[lang] + "\n"
-            + {'ru':f"Дата: {date}\nВремя начала: {time_start}\nВремя окончания: {time_end}\nМесто: {place}\nЦена: {price} PLN\n\nВведите новое расписание в формате:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена\nЗаметки (опционально)",
-                'uk':f"Дата: {date}\nЧас початку: {time_start}\nЧас закінчення: {time_end}\nМісце: {place}\nЦіна: {price} PLN\n\nВведіть новий розклад у форматі:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна\nНотатки (опціонально)",
-                'en':f"Date: {date}\nStart time: {time_start}\nEnd time: {time_end}\nPlace: {place}\nPrice: {price} PLN\n\nEnter new schedule in format:\nDate\nStart time\nEnd time\nPlace\nPrice\nExtra info (optional)"}[lang]
-        )
+        # Формируем блок для копирования и редактирования
+        schedule_block = f"{date}\n{time_start}\n{time_end}\n{place}\n{price}"
+        # Добавляем extra_info если есть
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            extra_info = await conn.fetchval('SELECT extra_info FROM games WHERE id = $1', game_id)
+        if extra_info:
+            schedule_block += f"\n{extra_info}"
+        # Инструкция для админа
+        instructions = {
+            'ru': "Скопируйте, отредактируйте и отправьте новое расписание в этом формате:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена\nЗаметки (опционально)",
+            'uk': "Скопіюйте, відредагуйте і надішліть новий розклад у цьому форматі:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна\nНотатки (опціонально)",
+            'en': "Copy, edit, and send the new schedule in this format:\nDate\nStart time\nEnd time\nPlace\nPrice\nExtra info (optional)"
+        }[lang]
         user_states[callback.from_user.id]['edit_game_mode'] = True
-        await callback.message.answer(current_text)
+        await callback.message.answer(f"{instructions}\n\n<pre>{schedule_block}</pre>", parse_mode='HTML')
     else:
         await callback.message.answer({'ru':'Игра не найдена.','uk':'Гру не знайдено.','en':'Game not found.'}[lang])
 
@@ -594,245 +616,140 @@ async def editgame(callback: CallbackQuery):
 async def handle_messages(message: Message):
     user_id = message.from_user.id
     lang = get_lang(user_id)
-    # Сохраняем пользователя
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', user_id, lang)
-    # Если админ в процессе добавления игры
-    if user_id in add_game_states:
-        state = add_game_states[user_id]
-        step = state.get('step')
+
+    # --- Create post step handler ---
+    state = user_states.get(user_id)
+    if state and state.get('step') == 'create_post':
+        post_text = message.text.strip()
+        if not post_text:
+            await message.answer({'ru':'Текст поста не может быть пустым.','uk':'Текст посту не може бути порожнім.','en':'Post text cannot be empty.'}[lang])
+            return
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
+            users = await conn.fetch('SELECT user_id FROM users')
+        sent_count = 0
+        for u in users:
+            try:
+                await bot.send_message(u['user_id'], post_text)
+                sent_count += 1
+            except Exception:
+                pass
+        user_states.pop(user_id, None)
+        await message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+        return
+
+    # --- Toggle paid status for registration ---
+    if message.text and message.text.startswith('/togglepaid_') and user_id in ADMIN_IDS:
+        try:
+            reg_id = int(message.text.split('_')[1])
+        except Exception:
+            await message.answer({'ru':'Ошибка: неверный формат команды.','uk':'Помилка: невірний формат команди.','en':'Error: invalid command format.'}[lang])
+            return
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            reg = await conn.fetchrow('SELECT paid FROM registrations WHERE id = $1', reg_id)
+            if not reg:
+                await message.answer({'ru':'Запись не найдена.','uk':'Запис не знайдено.','en':'Registration not found.'}[lang])
+                return
+            new_paid = 0 if reg['paid'] else 1
+            await conn.execute('UPDATE registrations SET paid = $1 WHERE id = $2', new_paid, reg_id)
+        await message.answer(f"{TEXTS['paid_status_changed'][lang]} {'✅' if new_paid else '❌'}", reply_markup=reply_menu(True, lang))
+        return
+
+    # --- Add game step handler ---
+    add_state = add_game_states.get(user_id)
+    if add_state:
+        step = add_state.get('step')
+        text = message.text.strip()
         if step == 'date':
-            state['date'] = message.text.strip()
-            state['step'] = 'time_start'
+            add_state['date'] = text
+            add_state['step'] = 'time_start'
             await message.answer(TEXTS['add_game_time_start'][lang])
+            return
         elif step == 'time_start':
-            state['time_start'] = message.text.strip()
-            state['step'] = 'time_end'
+            add_state['time_start'] = text
+            add_state['step'] = 'time_end'
             await message.answer(TEXTS['add_game_time_end'][lang])
+            return
         elif step == 'time_end':
-            state['time_end'] = message.text.strip()
-            state['step'] = 'place'
+            add_state['time_end'] = text
+            add_state['step'] = 'place'
             await message.answer(TEXTS['add_game_place'][lang])
+            return
         elif step == 'place':
-            state['place'] = message.text.strip()
-            state['step'] = 'price'
+            add_state['place'] = text
+            add_state['step'] = 'price'
             await message.answer(TEXTS['add_game_price'][lang])
+            return
         elif step == 'price':
             try:
-                state['price'] = int(message.text.strip())
+                price = int(text)
             except Exception:
                 await message.answer(TEXTS['add_game_price_error'][lang])
                 return
-            state['step'] = 'extra_info'
-            kb_skip = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={'ru':'Пропустить','uk':'Пропустити','en':'Skip'}[lang], callback_data='skip_extra_info')]])
-            await message.answer({'ru':'Введите заметки к игре (например, особенности, адрес, инвентарь):','uk':'Введіть нотатки до гри (наприклад, особливості, адреса, інвентар):','en':'Enter extra info for the game (e.g., details, address, equipment):'}[lang], reply_markup=kb_skip)
+            add_state['price'] = price
+            add_state['step'] = 'extra_info'
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={'ru':'Пропустить','uk':'Пропустити','en':'Skip'}[lang], callback_data='skip_extra_info')]])
+            await message.answer({'ru':'Введите заметки (опционально):','uk':'Введіть нотатки (опціонально):','en':'Enter extra info (optional):'}[lang], reply_markup=kb)
+            return
         elif step == 'extra_info':
-            state['extra_info'] = message.text.strip()
-            # Save game to DB
+            add_state['extra_info'] = text
             pool = await get_pg_pool()
             async with pool.acquire() as conn:
                 await conn.execute('INSERT INTO games (date, time_start, time_end, place, price, extra_info) VALUES ($1, $2, $3, $4, $5, $6)',
-                                   state['date'], state['time_start'], state['time_end'], state['place'], state['price'], state['extra_info'])
+                                   add_state['date'], add_state['time_start'], add_state['time_end'], add_state['place'], add_state['price'], add_state['extra_info'])
             add_game_states.pop(user_id, None)
             await message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
-        return
-    # Если админ создаёт пост
-    if user_states.get(user_id, {}).get('create_post'):
-        user_states[user_id]['post_text'] = message.text.strip()
+            return
+
+    # --- Registration flow: handle step 'name' ---
+    if user_id in user_states and user_states[user_id].get('step') == 'name':
+        full_name = message.text.strip()
+        user_states[user_id]['full_name'] = full_name
+        user_states[user_id]['step'] = 'username'
+        # Show two buttons: auto-insert and manual entry
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='📅 Расписание', callback_data='add_schedule_btn')],
-            [InlineKeyboardButton(text='Без кнопки', callback_data='no_btn')]
+            [InlineKeyboardButton(text={'ru':'Авто-вставка','uk':'Автовставка','en':'Auto-insert'}[lang], callback_data='auto_username')],
+            [InlineKeyboardButton(text={'ru':'Ввести вручную','uk':'Ввести вручну','en':'Enter manually'}[lang], callback_data='manual_username')]
         ])
-        await message.answer({'ru':'Добавить кнопку расписания к посту?','uk':'Додати кнопку розкладу до посту?','en':'Add schedule button to post?'}[lang], reply_markup=kb)
+        await message.answer(TEXTS['enter_username'][lang], reply_markup=kb)
         return
-    # Если админ редактирует игру
-    if user_states.get(user_id, {}).get('edit_game_mode'):
-        edit_game_id = user_states[user_id].get('edit_game_id')
-        lines = message.text.strip().split('\n')
-        if len(lines) < 5:
-            await message.answer({'ru':'Ошибка: нужно минимум 5 строк (дата, время начала, время окончания, место, цена).','uk':'Помилка: потрібно мінімум 5 рядків (дата, час початку, час закінчення, місце, ціна).','en':'Error: at least 5 lines required (date, start time, end time, place, price).'}[lang])
-            return
-        date, time_start, time_end, place, price = lines[:5]
-        extra_info = '\n'.join(lines[5:]).strip() if len(lines) > 5 else ''
-        try:
-            price = int(price)
-        except Exception:
-            await message.answer(TEXTS['add_game_price_error'][lang])
+
+    # --- Registration flow: handle step 'username' (manual entry) ---
+    if user_id in user_states and user_states[user_id].get('step') == 'username':
+        username = message.text.strip()
+        user_states[user_id]['username'] = username
+        game_id = user_states[user_id].get('registering')
+        full_name = user_states[user_id].get('full_name')
+        if not game_id or not full_name:
+            await message.answer({'ru':'Ошибка: не выбрана игра для регистрации.',
+                                  'uk':'Помилка: не вибрано гру для реєстрації.',
+                                  'en':'Error: no game selected for registration.'}[lang])
             return
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
-            await conn.execute('UPDATE games SET date=$1, time_start=$2, time_end=$3, place=$4, price=$5, extra_info=$6 WHERE id=$7',
-                               date, time_start, time_end, place, price, extra_info, edit_game_id)
-        user_states[user_id].pop('edit_game_mode', None)
-        user_states[user_id].pop('edit_game_id', None)
-        await message.answer({'ru':'Расписание обновлено!','uk':'Розклад оновлено!','en':'Schedule updated!'}[lang], reply_markup=reply_menu(user_id in ADMIN_IDS, lang=lang))
+            await conn.execute('INSERT INTO registrations (game_id, user_id, username, full_name, paid) VALUES ($1, $2, $3, $4, $5)',
+                               game_id, user_id, username, full_name, 0)
+        await message.answer(TEXTS['registered'][lang], reply_markup=reply_menu(user_id in ADMIN_IDS, lang=lang))
+        user_states[user_id].pop('registering', None)
+        user_states[user_id].pop('full_name', None)
+        user_states[user_id].pop('username', None)
+        user_states[user_id].pop('step', None)
         return
-    # ...existing code for unknown commands...
-    # Handle 'Удалить игру' menu
-    if message.text in ['❌ Удалить игру', '❌ Видалити гру', '❌ Delete game']:
-        if user_id not in ADMIN_IDS:
-            await message.answer(TEXTS['no_access'][lang])
-            return
-        pool = await get_pg_pool()
-        async with pool.acquire() as conn:
-            games = await conn.fetch('SELECT id, date, time_start, time_end, place FROM games')
-            if not games:
-                await message.answer(TEXTS['delete_game_empty'][lang])
-                return
-            kb_rows = []
-            for game in games:
-                game_id, date, time_start, time_end, place = game['id'], game['date'], game['time_start'], game['time_end'], game['place']
-                kb_rows.append([InlineKeyboardButton(text=f"{date} {time_start}-{time_end} {place}", callback_data=f'delgame_{game_id}')])
-            kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-            await message.answer(TEXTS['delete_game_choose'][lang], reply_markup=kb)
-        return
-    # Handle 'Создать пост' menu
-    if message.text in ['📝 Создать пост', '📝 Створити пост', '📝 Create post']:
-        if user_id not in ADMIN_IDS:
-            await message.answer(TEXTS['no_access'][lang])
-            return
-        user_states[user_id] = user_states.get(user_id, {})
-        user_states[user_id]['create_post'] = True
-        await message.answer('Введите текст поста:')
-        return
-    await message.answer(TEXTS['unknown_command'][lang], reply_markup=reply_menu(user_id in ADMIN_IDS, lang=lang))
-# Callback для username выбора
-@dp.message(F.text.in_([
-    '📝 Создать пост', '📝 Створити пост', '📝 Create post'
-]))
-async def create_post_start(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer('Нет доступа.')
-        return
-    user_states[message.from_user.id] = user_states.get(message.from_user.id, {})
-    user_states[message.from_user.id]['create_post'] = True
-    await message.answer('Введите текст поста:')
-
-@dp.callback_query(F.data == 'add_schedule_btn')
-async def post_with_btn(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    post_text = user_states.get(user_id, {}).get('post_text', '')
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='📅 Расписание', callback_data='main_schedule')]
-    ])
-    await callback.message.answer(post_text, reply_markup=kb)
-    user_states[user_id].pop('create_post', None)
-    user_states[user_id].pop('post_text', None)
-    user_states['last_admin_post'] = post_text
-    await callback.message.delete()
-
-@dp.callback_query(F.data == 'no_btn')
-async def post_without_btn(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    post_text = user_states.get(user_id, {}).get('post_text', '')
-    await callback.message.answer(post_text)
-    user_states[user_id].pop('create_post', None)
-    user_states[user_id].pop('post_text', None)
-    await callback.message.delete()
-
-@dp.callback_query(F.data == 'show_schedule')
-async def show_schedule_btn(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price, extra_info FROM games')
-    if not games:
-        await callback.message.answer(TEXTS['schedule_empty'][lang])
-        await callback.answer()
-        return
-        for game in games:
-            game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
-            # Определяем день недели
-            try:
-                day, month, year = map(int, date.split('.'))
-                dt = datetime.date(year, month, day)
-                weekday = dt.strftime('%A')
-                weekday_ru = {
-                    'Monday': 'Понедельник',
-                    'Tuesday': 'Вторник',
-                    'Wednesday': 'Среда',
-                    'Thursday': 'Четверг',
-                    'Friday': 'Пятница',
-                    'Saturday': 'Суббота',
-                    'Sunday': 'Воскресенье'
-                }
-                weekday_uk = {
-                    'Monday': 'Понеділок',
-                    'Tuesday': 'Вівторок',
-                    'Wednesday': 'Середа',
-                    'Thursday': 'Четвер',
-                    'Friday': 'Пʼятниця',
-                    'Saturday': 'Субота',
-                    'Sunday': 'Неділя'
-                }
-                weekday_en = {
-                    'Monday': 'Monday',
-                    'Tuesday': 'Tuesday',
-                    'Wednesday': 'Wednesday',
-                    'Thursday': 'Thursday',
-                    'Friday': 'Friday',
-                    'Saturday': 'Saturday',
-                    'Sunday': 'Sunday'
-                }
-                weekday_str = {'ru': weekday_ru, 'uk': weekday_uk, 'en': weekday_en}[lang][weekday]
-            except Exception:
-                weekday_str = ''
-            # Fetch registrations from PostgreSQL
-            registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
-            main_list = registrations[:14]
-            reserve_list = registrations[14:]
-            maps_url = f'https://www.google.com/maps/search/?api=1&query={place.replace(" ", "+")}'
-            place_link = f'<a href="{maps_url}">{place}</a>'
-            def name_link(name, username):
-                if username:
-                    return f'<a href="https://t.me/{username.lstrip("@").strip()}">{name}</a>'
-                return name
-            reg_text = ""
-            for idx, r in enumerate(main_list, 1):
-                reg_text += f"{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
-            if reserve_list:
-                reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
-                for idx, r in enumerate(reserve_list, 1):
-                    reg_text += f"R{idx}. {name_link(r[0], r[1])} {'✅' if r[2] else ''}\n"
-            if not reg_text:
-                reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
-            # Форматируем дату без года
-            try:
-                date_no_year = '.'.join(date.split('.')[:2])
-            except Exception:
-                date_no_year = date
-            extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
-            text = (f"📅 {date_no_year} ({weekday_str})\n"
-                    f"⏰ {time_start} - {time_end}\n"
-                    f"🏟️ {place_link}\n"
-                    f"💵 {price} PLN\n"
-                    f"{extra_info_text}"
-                    f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
-            ])
-            await callback.message.answer(text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
-    await callback.answer()
-
-# --- Авто-вставка username ---
 @dp.callback_query(F.data == 'auto_username')
 async def auto_username(callback: CallbackQuery):
     user_id = callback.from_user.id
     lang = get_lang(user_id)
     tg_username = callback.from_user.username or ''
-    # Используем имя/фамилию, введённые пользователем
-    full_name = user_states[user_id].get('full_name')
-    if not full_name:
-        full_name = f"{callback.from_user.first_name or ''} {callback.from_user.last_name or ''}".strip()
+    user_states[user_id]['username'] = tg_username
     game_id = user_states[user_id].get('registering')
-    if not game_id:
+    full_name = user_states[user_id].get('full_name')
+    if not game_id or not full_name:
         await callback.message.answer({'ru':'Ошибка: не выбрана игра для регистрации.',
                                       'uk':'Помилка: не вибрано гру для реєстрації.',
                                       'en':'Error: no game selected for registration.'}[lang])
         return
-    user_states[user_id]['username'] = tg_username
-    user_states[user_id]['full_name'] = full_name
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
         await conn.execute('INSERT INTO registrations (game_id, user_id, username, full_name, paid) VALUES ($1, $2, $3, $4, $5)',
@@ -842,6 +759,8 @@ async def auto_username(callback: CallbackQuery):
     user_states[user_id].pop('full_name', None)
     user_states[user_id].pop('username', None)
     user_states[user_id].pop('step', None)
+    await callback.answer()
+
 
 @dp.callback_query(F.data == 'manual_username')
 async def manual_username(callback: CallbackQuery):
