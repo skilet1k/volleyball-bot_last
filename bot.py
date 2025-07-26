@@ -114,6 +114,8 @@ LANGUAGES = {
 async def delete_game_menu(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
     
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
@@ -299,6 +301,8 @@ async def ensure_user_lang(user_id):
 async def parameters_menu(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
     
     user_id = message.from_user.id
     
@@ -363,12 +367,20 @@ def clear_add_game_state(user_id):
     """Очищает состояние добавления игры для пользователя"""
     add_game_states.pop(user_id, None)
 
+def clear_post_creation_state(user_id):
+    """Очищает состояние создания поста для пользователя"""
+    if user_id in user_states:
+        user_states[user_id].pop('step', None)
+        user_states[user_id].pop('post_text', None)
+
 @dp.message(F.text.in_([
     '📅 Расписание', '📅 Розклад', '📅 Schedule'
 ]))
 async def show_schedule(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
     
     user_id = message.from_user.id
     
@@ -452,6 +464,8 @@ async def delreg(callback: CallbackQuery):
 async def register(callback: CallbackQuery):
     # Очищаем состояние добавления игры при начале регистрации
     clear_add_game_state(callback.from_user.id)
+    # Очищаем состояние создания поста при начале регистрации
+    clear_post_creation_state(callback.from_user.id)
     
     user_id = callback.from_user.id
     
@@ -534,6 +548,9 @@ async def add_new(callback: CallbackQuery):
     '➕ Добавить игру', '➕ Додати гру', '➕ Add game'
 ]))
 async def add_game_menu(message: Message):
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
+    
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
         await message.answer(TEXTS['no_access'][lang])
@@ -649,6 +666,8 @@ async def cancel_addgame(callback: CallbackQuery):
 async def my_records(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
     
     user_id = message.from_user.id
     
@@ -711,6 +730,8 @@ async def delgame(callback: CallbackQuery):
 async def view_records(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при переходе к другому действию
+    clear_post_creation_state(message.from_user.id)
     
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
@@ -803,6 +824,8 @@ async def editgame(callback: CallbackQuery):
 async def start_command(message: Message):
     # Очищаем состояние добавления игры при команде /start
     clear_add_game_state(message.from_user.id)
+    # Очищаем состояние создания поста при команде /start
+    clear_post_creation_state(message.from_user.id)
     
     user_id = message.from_user.id
     is_admin = user_id in ADMIN_IDS
@@ -1104,17 +1127,26 @@ if __name__ == "__main__":
         await init_db()
 
 
-    # For Render deployment, uncomment the HTTP server block below:
-    async def handle(request):
-        return web.Response(text="OK")
+    # For local development, comment out the HTTP server block below:
+    # For production deployment (Render, Heroku, etc.), uncomment the HTTP server block:
+    
+    # Проверяем, запущен ли бот в продакшене (есть переменная PORT)
+    if os.getenv("PORT"):
+        # Режим продакшена - запускаем веб-сервер для Render/Heroku
+        async def handle(request):
+            return web.Response(text="Bot is running!")
 
-    def run_web():
-        app = web.Application()
-        app.router.add_get("/", handle)
-        port = int(os.environ.get("PORT", 10000))
-        web.run_app(app, port=port)
+        def run_web():
+            try:
+                app = web.Application()
+                app.router.add_get("/", handle)
+                port = int(os.environ.get("PORT", 10000))
+                web.run_app(app, port=port, host="0.0.0.0")
+            except Exception as e:
+                print(f"Web server error: {e}")
 
-    threading.Thread(target=run_web, daemon=True).start()
+        threading.Thread(target=run_web, daemon=True).start()
+        print(f"Web server started on port {os.getenv('PORT', 10000)}")
 
     dp.startup.register(on_startup)
     dp.run_polling(bot)
