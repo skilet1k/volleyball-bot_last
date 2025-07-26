@@ -83,7 +83,8 @@ import datetime
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
 
 ADMIN_IDS = [760746564, 683243528, 1202044081]
-DB_DSN = os.getenv('POSTGRES_DSN') or 'postgresql://postgres:postgres@localhost:5432/volleyball'
+# Railway использует DATABASE_URL, Render использует POSTGRES_DSN
+DB_DSN = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_DSN') or 'postgresql://postgres:postgres@localhost:5432/volleyball'
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
