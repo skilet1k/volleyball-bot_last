@@ -23,18 +23,43 @@ async def init_db():
                 await conn.execute('ALTER TABLE games ADD COLUMN extra_info TEXT')
             except Exception:
                 pass  # Ignore if column already exists
+        
+        # Create registrations table with BIGINT for user_id
         await conn.execute('''CREATE TABLE IF NOT EXISTS registrations (
             id SERIAL PRIMARY KEY,
             game_id INTEGER,
-            user_id INTEGER,
+            user_id BIGINT,
             username TEXT,
             full_name TEXT,
             paid INTEGER DEFAULT 0
         )''')
+        
+        # Create users table with BIGINT for user_id
         await conn.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             lang TEXT
         )''')
+        
+        # Check if we need to alter existing tables to use BIGINT
+        try:
+            # Check registrations table
+            reg_user_id_type = await conn.fetchval("""
+                SELECT data_type FROM information_schema.columns 
+                WHERE table_name='registrations' AND column_name='user_id'
+            """)
+            if reg_user_id_type == 'integer':
+                await conn.execute('ALTER TABLE registrations ALTER COLUMN user_id TYPE BIGINT')
+                
+            # Check users table  
+            users_user_id_type = await conn.fetchval("""
+                SELECT data_type FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='user_id'
+            """)
+            if users_user_id_type == 'integer':
+                await conn.execute('ALTER TABLE users ALTER COLUMN user_id TYPE BIGINT')
+        except Exception as e:
+            print(f"Note: Could not alter existing tables: {e}")
+            # This is okay - tables might not exist yet or already be correct type
 def reply_menu(is_admin=False, lang='ru'):
     buttons = [
         [KeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang])],
@@ -55,7 +80,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQu
 import asyncpg
 import datetime
 
-TOKEN = '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
+TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
 
 ADMIN_IDS = [760746564, 683243528, 1202044081]
 DB_DSN = os.getenv('POSTGRES_DSN') or 'postgresql://postgres:postgres@localhost:5432/volleyball'
@@ -87,6 +112,9 @@ LANGUAGES = {
 # --- Delete game menu ---
 @dp.message(F.text.in_(['❌ Удалить игру','❌ Видалити гру','❌ Delete game']))
 async def delete_game_menu(message: Message):
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
         await message.answer(TEXTS['no_access'][lang])
@@ -107,6 +135,9 @@ async def delete_game_menu(message: Message):
 # --- Create post menu ---
 @dp.message(F.text.in_(['📝 Создать пост','📝 Створити пост','📝 Create post']))
 async def create_post_menu(message: Message):
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
         await message.answer(TEXTS['no_access'][lang])
@@ -125,6 +156,11 @@ TEXTS = {
         'ru': "Добро пожаловать! Выберите язык:",
         'uk': "Ласкаво просимо! Виберіть мову:",
         'en': "Welcome! Choose your language:"
+    },
+    'welcome_description': {
+        'ru': "🏐 Играем волейбол в Варшаве — зал, мячи, организация за 25–29 PLN.\n📅 Расписание обновляется каждый понедельник в 12:00.\n📝 Записывайся на игры прямо тут!",
+        'uk': "🏐 Граємо у волейбол у Варшаві — зал, м'ячі, організація за 25–29 PLN.\n📅 Розклад оновлюється щопонеділка о 12:00.\n📝 Записуйся на ігри прямо тут!",
+        'en': "🏐 Playing volleyball in Warsaw — hall, balls, organization for 25–29 PLN.\n📅 Schedule is updated every Monday at 12:00.\n📝 Sign up for games right here!"
     },
     'choose_action': {
         'ru': "Выберите действие:",
@@ -236,11 +272,39 @@ TEXTS = {
 def get_lang(user_id):
     return user_states.get(user_id, {}).get('lang', 'ru')
 
+async def ensure_user_lang(user_id):
+    """Убеждается, что язык пользователя загружен в user_states"""
+    if user_id not in user_states or 'lang' not in user_states[user_id]:
+        # Загружаем из базы данных
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            user_data = await conn.fetchrow('SELECT lang FROM users WHERE user_id = $1', user_id)
+            if user_data:
+                lang = user_data['lang'] if user_data['lang'] else 'ru'
+            else:
+                # Новый пользователь - создаем запись в базе
+                lang = 'ru'
+                await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', user_id, lang)
+            
+            # Обновляем user_states
+            if user_id not in user_states:
+                user_states[user_id] = {}
+            user_states[user_id]['lang'] = lang
+    
+    return user_states[user_id]['lang']
+
 @dp.message(F.text.in_([
     '⚙️ Параметры', '⚙️ Параметри', '⚙️ Parameters'
 ]))
 async def parameters_menu(message: Message):
-    lang = get_lang(message.from_user.id)
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
+    user_id = message.from_user.id
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
+    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=LANGUAGES['ru'], callback_data='lang_ru')],
         [InlineKeyboardButton(text=LANGUAGES['uk'], callback_data='lang_uk')],
@@ -275,11 +339,41 @@ async def set_language(callback: CallbackQuery):
     await callback.message.answer({'ru':'Язык изменён.','uk':'Мову змінено.','en':'Language changed.'}[lang], reply_markup=reply_menu(is_admin, lang))
     await callback.answer()
 
+@dp.callback_query(F.data.startswith('lang_') & F.data.endswith('_first'))
+async def set_language_first_time(callback: CallbackQuery):
+    # Обработчик для выбора языка при первом запуске
+    lang = callback.data.split('_')[1]  # Извлекаем язык из callback_data типа 'lang_ru_first'
+    user_id = callback.from_user.id
+    is_admin = user_id in ADMIN_IDS
+    
+    # Сохраняем язык в состоянии пользователя
+    user_states[user_id] = {'lang': lang}
+    
+    # Сохраняем пользователя в базу данных
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2)', user_id, lang)
+    
+    # Показываем приветственное описание бота
+    welcome_description = TEXTS['welcome_description'][lang]
+    await callback.message.edit_text(welcome_description, reply_markup=reply_menu(is_admin, lang))
+    await callback.answer()
+
+def clear_add_game_state(user_id):
+    """Очищает состояние добавления игры для пользователя"""
+    add_game_states.pop(user_id, None)
+
 @dp.message(F.text.in_([
     '📅 Расписание', '📅 Розклад', '📅 Schedule'
 ]))
 async def show_schedule(message: Message):
-    lang = get_lang(message.from_user.id)
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
+    user_id = message.from_user.id
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
 
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
@@ -356,11 +450,16 @@ async def delreg(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith('register_'))
 async def register(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
+    # Очищаем состояние добавления игры при начале регистрации
+    clear_add_game_state(callback.from_user.id)
+    
+    user_id = callback.from_user.id
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
+    
     game_id = int(callback.data.split('_')[1])
-    if callback.from_user.id not in user_states:
-        user_states[callback.from_user.id] = {'lang': lang}
-    user_states[callback.from_user.id]['registering'] = game_id
+    user_states[user_id]['registering'] = game_id
 
     # Получаем ранее записанных игроков ТОЛЬКО этого пользователя
     pool = await get_pg_pool()
@@ -380,8 +479,9 @@ async def register(callback: CallbackQuery):
 
 @dp.callback_query(F.data == 'choose_prev')
 async def choose_prev(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
-    previous = user_states[callback.from_user.id].get('previous', [])
+    user_id = callback.from_user.id
+    lang = await ensure_user_lang(user_id)
+    previous = user_states[user_id].get('previous', [])
     seen = set()
     unique_previous = []
     for name, username in previous:
@@ -407,7 +507,8 @@ async def choose_prev(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith('prev_'))
 async def prev_selected(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
+    user_id = callback.from_user.id
+    lang = await ensure_user_lang(user_id)
     parts = callback.data.split('_', 2)
     full_name = parts[1]
     username = parts[2]
@@ -424,7 +525,8 @@ async def prev_selected(callback: CallbackQuery):
 
 @dp.callback_query(F.data == 'add_new')
 async def add_new(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
+    user_id = callback.from_user.id
+    lang = await ensure_user_lang(user_id)
     user_states[callback.from_user.id]['step'] = 'name'
     await callback.message.answer(TEXTS['enter_name'][lang])
 
@@ -460,6 +562,81 @@ async def skip_extra_info(callback: CallbackQuery):
     await callback.message.answer(TEXTS['add_game_added'][lang], reply_markup=reply_menu(True, lang))
     await callback.answer()
 
+@dp.callback_query(F.data == 'post_with_schedule_button')
+async def post_with_schedule_button(callback: CallbackQuery):
+    lang = get_lang(callback.from_user.id)
+    user_id = callback.from_user.id
+    state = user_states.get(user_id)
+    
+    if not state or state.get('step') != 'post_button_choice':
+        await callback.answer()
+        return
+        
+    post_text = state.get('post_text')
+    if not post_text:
+        await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
+        await callback.answer()
+        return
+    
+    # Создаем кнопку расписания
+    schedule_button = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang], callback_data='main_schedule')]
+    ])
+    
+    # Сохраняем пост в базу данных
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
+        users = await conn.fetch('SELECT user_id FROM users')
+    
+    # Отправляем пост всем пользователям с кнопкой
+    sent_count = 0
+    for u in users:
+        try:
+            await bot.send_message(u['user_id'], post_text, reply_markup=schedule_button)
+            sent_count += 1
+        except Exception:
+            pass
+    
+    user_states.pop(user_id, None)
+    await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!','en':f'Post with button sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+    await callback.answer()
+
+@dp.callback_query(F.data == 'post_without_button')
+async def post_without_button(callback: CallbackQuery):
+    lang = get_lang(callback.from_user.id)
+    user_id = callback.from_user.id
+    state = user_states.get(user_id)
+    
+    if not state or state.get('step') != 'post_button_choice':
+        await callback.answer()
+        return
+        
+    post_text = state.get('post_text')
+    if not post_text:
+        await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
+        await callback.answer()
+        return
+    
+    # Сохраняем пост в базу данных
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
+        users = await conn.fetch('SELECT user_id FROM users')
+    
+    # Отправляем пост всем пользователям без кнопки
+    sent_count = 0
+    for u in users:
+        try:
+            await bot.send_message(u['user_id'], post_text)
+            sent_count += 1
+        except Exception:
+            pass
+    
+    user_states.pop(user_id, None)
+    await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+    await callback.answer()
+
 @dp.callback_query(F.data == 'cancel_addgame')
 async def cancel_addgame(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
@@ -470,7 +647,14 @@ async def cancel_addgame(callback: CallbackQuery):
     '🎟 Мои записи', '🎟 Мої записи', '🎟 My records'
 ]))
 async def my_records(message: Message):
-    lang = get_lang(message.from_user.id)
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
+    user_id = message.from_user.id
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
+    
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
         games = await conn.fetch('''SELECT g.id, g.date, g.time_start, g.time_end, g.place, g.price FROM games g JOIN registrations r ON r.game_id = g.id WHERE r.user_id = $1 GROUP BY g.id ORDER BY g.date, g.time_start''', message.from_user.id)
@@ -525,6 +709,9 @@ async def delgame(callback: CallbackQuery):
     '👥 Просмотреть записи', '👥 Переглянути записи', '👥 View registrations'
 ]))
 async def view_records(message: Message):
+    # Очищаем состояние добавления игры при переходе к другому действию
+    clear_add_game_state(message.from_user.id)
+    
     lang = get_lang(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS:
         await message.answer(TEXTS['no_access'][lang])
@@ -612,10 +799,42 @@ async def editgame(callback: CallbackQuery):
     else:
         await callback.message.answer({'ru':'Игра не найдена.','uk':'Гру не знайдено.','en':'Game not found.'}[lang])
 
+@dp.message(CommandStart())
+async def start_command(message: Message):
+    # Очищаем состояние добавления игры при команде /start
+    clear_add_game_state(message.from_user.id)
+    
+    user_id = message.from_user.id
+    is_admin = user_id in ADMIN_IDS
+    
+    # Проверяем, есть ли пользователь в базе данных
+    pool = await get_pg_pool()
+    async with pool.acquire() as conn:
+        existing_user = await conn.fetchrow('SELECT user_id, lang FROM users WHERE user_id = $1', user_id)
+    
+    if existing_user:
+        # Пользователь уже существует, показываем описание и меню
+        lang = existing_user['lang'] if existing_user['lang'] else 'ru'
+        user_states[user_id] = {'lang': lang}
+        
+        welcome_description = TEXTS['welcome_description'][lang]
+        await message.answer(welcome_description, reply_markup=reply_menu(is_admin, lang))
+    else:
+        # Новый пользователь, предлагаем выбрать язык
+        welcome_text = TEXTS['welcome']['uk']  # Показываем приветствие на украинском по умолчанию
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=LANGUAGES['ru'], callback_data='lang_ru_first')],
+            [InlineKeyboardButton(text=LANGUAGES['uk'], callback_data='lang_uk_first')],
+            [InlineKeyboardButton(text=LANGUAGES['en'], callback_data='lang_en_first')]
+        ])
+        await message.answer(welcome_text, reply_markup=kb)
+
 @dp.message()
 async def handle_messages(message: Message):
     user_id = message.from_user.id
-    lang = get_lang(user_id)
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
 
     # --- Create post step handler ---
     state = user_states.get(user_id)
@@ -624,20 +843,58 @@ async def handle_messages(message: Message):
         if not post_text:
             await message.answer({'ru':'Текст поста не может быть пустым.','uk':'Текст посту не може бути порожнім.','en':'Post text cannot be empty.'}[lang])
             return
-        pool = await get_pg_pool()
-        async with pool.acquire() as conn:
-            await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
-            users = await conn.fetch('SELECT user_id FROM users')
-        sent_count = 0
-        for u in users:
-            try:
-                await bot.send_message(u['user_id'], post_text)
-                sent_count += 1
-            except Exception:
-                pass
-        user_states.pop(user_id, None)
-        await message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+        # Сохраняем текст поста в состоянии пользователя
+        user_states[user_id]['post_text'] = post_text
+        user_states[user_id]['step'] = 'post_button_choice'
+        
+        # Предлагаем выбор с кнопками
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text={'ru':'📅 С кнопкой "Расписание"','uk':'📅 З кнопкою "Розклад"','en':'📅 With "Schedule" button'}[lang], callback_data='post_with_schedule_button')],
+            [InlineKeyboardButton(text={'ru':'📝 Без кнопки','uk':'📝 Без кнопки','en':'📝 Without button'}[lang], callback_data='post_without_button')]
+        ])
+        await message.answer({'ru':'Добавить кнопку расписания под постом?','uk':'Додати кнопку розкладу під постом?','en':'Add schedule button under the post?'}[lang], reply_markup=kb)
         return
+
+    # --- Edit game step handler ---
+    if state and state.get('edit_game_mode') and user_id in ADMIN_IDS:
+        game_id = state.get('edit_game_id')
+        if not game_id:
+            await message.answer({'ru':'Ошибка: игра для редактирования не найдена.','uk':'Помилка: гру для редагування не знайдено.','en':'Error: game for editing not found.'}[lang])
+            return
+        
+        lines = message.text.strip().split('\n')
+        if len(lines) < 5:
+            await message.answer({'ru':'Ошибка: неправильный формат. Нужно:\nДата\nВремя начала\nВремя окончания\nМесто\nЦена\nЗаметки (опционально)','uk':'Помилка: неправильний формат. Потрібно:\nДата\nЧас початку\nЧас закінчення\nМісце\nЦіна\nНотатки (опціонально)','en':'Error: wrong format. Need:\nDate\nStart time\nEnd time\nPlace\nPrice\nExtra info (optional)'}[lang])
+            return
+        
+        try:
+            date = lines[0].strip()
+            time_start = lines[1].strip()
+            time_end = lines[2].strip()
+            place = lines[3].strip()
+            price = int(lines[4].strip())
+            extra_info = lines[5].strip() if len(lines) > 5 else ''
+            
+            pool = await get_pg_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    'UPDATE games SET date = $1, time_start = $2, time_end = $3, place = $4, price = $5, extra_info = $6 WHERE id = $7',
+                    date, time_start, time_end, place, price, extra_info, game_id
+                )
+            
+            # Очищаем состояние
+            user_states[user_id].pop('edit_game_mode', None)
+            user_states[user_id].pop('edit_game_id', None)
+            
+            await message.answer({'ru':'Расписание обновлено!','uk':'Розклад оновлено!','en':'Schedule updated!'}[lang], reply_markup=reply_menu(True, lang))
+            return
+            
+        except ValueError:
+            await message.answer({'ru':'Ошибка: цена должна быть числом.','uk':'Помилка: ціна має бути числом.','en':'Error: price must be a number.'}[lang])
+            return
+        except Exception as e:
+            await message.answer({'ru':'Ошибка при обновлении расписания.','uk':'Помилка при оновленні розкладу.','en':'Error updating schedule.'}[lang])
+            return
 
     # --- Toggle paid status for registration ---
     if message.text and message.text.startswith('/togglepaid_') and user_id in ADMIN_IDS:
@@ -740,7 +997,7 @@ async def handle_messages(message: Message):
 @dp.callback_query(F.data == 'auto_username')
 async def auto_username(callback: CallbackQuery):
     user_id = callback.from_user.id
-    lang = get_lang(user_id)
+    lang = await ensure_user_lang(user_id)
     tg_username = callback.from_user.username or ''
     user_states[user_id]['username'] = tg_username
     game_id = user_states[user_id].get('registering')
@@ -765,7 +1022,7 @@ async def auto_username(callback: CallbackQuery):
 @dp.callback_query(F.data == 'manual_username')
 async def manual_username(callback: CallbackQuery):
     user_id = callback.from_user.id
-    lang = get_lang(user_id)
+    lang = await ensure_user_lang(user_id)
     user_states[user_id]['step'] = 'username'
     await callback.message.answer({'ru':'Скопируйте ваш username из профиля Telegram. Откройте свой профиль, он начинается с @. Например: @nickname',
                                   'uk':'Скопіюйте ваш username з профілю Telegram. Відкрийте свій профіль, він починається з @. Наприклад: @nickname',
@@ -790,19 +1047,30 @@ async def delete_player_mode(callback: CallbackQuery):
             reserve_list = registrations[14:]
             reg_text = ""
             kb_rows = []
+            
+            # Создаем кнопки для основного списка
             for idx, r in enumerate(main_list, 1):
                 reg_text += f"{idx}. {r['full_name']} {'✅' if r['paid'] else ''}\n"
-            kb_rows.append([InlineKeyboardButton(text={'ru':f"Удалить: {r['full_name']}", 'uk':f"Видалити: {r['full_name']}", 'en':f"Delete: {r['full_name']}"}[lang], callback_data=f"deladminreg_{r['id']}")])
+                kb_rows.append([InlineKeyboardButton(text={'ru':f"Удалить: {r['full_name']}", 'uk':f"Видалити: {r['full_name']}", 'en':f"Delete: {r['full_name']}"}[lang], callback_data=f"deladminreg_{r['id']}")])
+            
+            # Создаем кнопки для резервного списка
             if reserve_list:
                 reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
                 for idx, r in enumerate(reserve_list, 1):
                     reg_text += f"R{idx}. {r['full_name']} {'✅' if r['paid'] else ''}\n"
                     kb_rows.append([InlineKeyboardButton(text={'ru':f"Удалить: {r['full_name']}", 'uk':f"Видалити: {r['full_name']}", 'en':f"Delete: {r['full_name']}"}[lang], callback_data=f"deladminreg_{r['id']}")])
+            
             if not reg_text:
                 reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
+            
             text = (f"📅 {date} ⏰ {time_start}-{time_end} 🏟️ {place} \n{reg_text}")
-            kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-            await callback.message.answer(text, reply_markup=kb)
+            
+            # Создаем клавиатуру только если есть кнопки
+            if kb_rows:
+                kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+                await callback.message.answer(text, reply_markup=kb)
+            else:
+                await callback.message.answer(text)
 
 
 @dp.callback_query(F.data.startswith('deladminreg_'))
@@ -836,17 +1104,17 @@ if __name__ == "__main__":
         await init_db()
 
 
-    # For local development, comment out the HTTP server block below:
-    # async def handle(request):
-    #     return web.Response(text="OK")
-    #
-    # def run_web():
-    #     app = web.Application()
-    #     app.router.add_get("/", handle)
-    #     port = int(os.environ.get("PORT", 10000))
-    #     web.run_app(app, port=port)
-    #
-    # threading.Thread(target=run_web, daemon=True).start()
+    # For Render deployment, uncomment the HTTP server block below:
+    async def handle(request):
+        return web.Response(text="OK")
+
+    def run_web():
+        app = web.Application()
+        app.router.add_get("/", handle)
+        port = int(os.environ.get("PORT", 10000))
+        web.run_app(app, port=port)
+
+    threading.Thread(target=run_web, daemon=True).start()
 
     dp.startup.register(on_startup)
     dp.run_polling(bot)
