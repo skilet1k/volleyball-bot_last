@@ -198,26 +198,36 @@ async def translate_text(text, target_lang):
             try:
                 translator = deepl.Translator(DEEPL_API_KEY)
                 
-                # Определяем исходный язык для DeepL
-                source_lang_deepl = deepl_lang_codes.get(detected_lang, 'RU')
+                # Определяем исходный язык для DeepL с правильным форматом
+                deepl_source_codes = {
+                    'ru': 'RU',
+                    'uk': 'UK', 
+                    'en': 'EN'  # Исправлено: используем 'EN' вместо определения из detected_lang
+                }
                 
-                # Специальный контекст для волейбольных терминов
-                result = translator.translate_text(
-                    text, 
-                    source_lang=source_lang_deepl,
-                    target_lang=target_code_deepl,
-                    preserve_formatting=True,
-                    formality='default'
-                )
+                source_lang_deepl = deepl_source_codes.get(detected_lang)
                 
-                translated = result.text if hasattr(result, 'text') else str(result)
-                print(f"🚀 DeepL translation: '{translated[:50]}...'")
-                
-                # Проверяем качество перевода
-                if translated and translated.strip() != text.strip():
-                    return translated
+                # Проверяем, поддерживает ли DeepL это направление перевода
+                if source_lang_deepl and source_lang_deepl != target_code_deepl:
+                    # Специальный контекст для волейбольных терминов
+                    result = translator.translate_text(
+                        text, 
+                        source_lang=source_lang_deepl,
+                        target_lang=target_code_deepl,
+                        preserve_formatting=True,
+                        formality='default'
+                    )
+                    
+                    translated = result.text if hasattr(result, 'text') else str(result)
+                    print(f"🚀 DeepL translation: '{translated[:50]}...'")
+                    
+                    # Проверяем качество перевода
+                    if translated and translated.strip() != text.strip():
+                        return translated
+                    else:
+                        print("⚠️ DeepL translation failed, falling back to Google")
                 else:
-                    print("⚠️ DeepL translation failed, falling back to Google")
+                    print(f"⚠️ DeepL doesn't support {detected_lang}→{target_lang}, using Google")
                     
             except Exception as e:
                 print(f"❌ DeepL error: {e}, falling back to Google")
