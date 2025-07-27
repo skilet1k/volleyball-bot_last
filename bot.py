@@ -1119,7 +1119,6 @@ async def delete_last_bot_message(user_id, chat):
 # --- Запуск бота ---
 if __name__ == "__main__":
     import logging
-    import threading
     from aiohttp import web
 
     logging.basicConfig(level=logging.INFO)
@@ -1127,27 +1126,32 @@ if __name__ == "__main__":
     async def on_startup(dispatcher):
         await init_db()
 
+    dp.startup.register(on_startup)
 
-    # For local development, comment out the HTTP server block below:
-    # For production deployment (Render, Heroku, etc.), uncomment the HTTP server block:
-    
     # Проверяем, запущен ли бот в продакшене (есть переменная PORT)
     if os.getenv("PORT"):
         # Режим продакшена - запускаем веб-сервер для Render/Heroku
         async def handle(request):
             return web.Response(text="Bot is running!")
 
-        def run_web():
-            try:
-                app = web.Application()
-                app.router.add_get("/", handle)
-                port = int(os.environ.get("PORT", 10000))
-                web.run_app(app, port=port, host="0.0.0.0")
-            except Exception as e:
-                print(f"Web server error: {e}")
+        async def main():
+            # Создаем веб-приложение
+            app = web.Application()
+            app.router.add_get("/", handle)
+            
+            # Создаем runner для веб-сервера
+            runner = web.AppRunner(app)
+            await runner.setup()
+            
+            port = int(os.environ.get("PORT", 10000))
+            site = web.TCPSite(runner, "0.0.0.0", port)
+            await site.start()
+            print(f"Web server started on port {port}")
+            
+            # Запускаем бота
+            await dp.start_polling(bot)
 
-        threading.Thread(target=run_web, daemon=True).start()
-        print(f"Web server started on port {os.getenv('PORT', 10000)}")
-
-    dp.startup.register(on_startup)
-    dp.run_polling(bot)
+        asyncio.run(main())
+    else:
+        # Локальная разработка - только бот
+        dp.run_polling(bot)
