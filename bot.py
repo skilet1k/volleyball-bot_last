@@ -74,6 +74,10 @@ def reply_menu(is_admin=False, lang='ru'):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 import asyncio
 import os
+import datetime
+import logging
+import signal
+import sys
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
@@ -86,6 +90,17 @@ ADMIN_IDS = [760746564, 683243528, 1202044081]
 # Railway использует DATABASE_URL, Render использует POSTGRES_DSN
 DB_DSN = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_DSN') or 'postgresql://postgres:postgres@localhost:5432/volleyball'
 
+# Проверяем наличие важных переменных окружения
+if not TOKEN:
+    print("ERROR: TELEGRAM_BOT_TOKEN not found!")
+    exit(1)
+
+if not DB_DSN or DB_DSN == 'postgresql://postgres:postgres@localhost:5432/volleyball':
+    print("WARNING: Using default database DSN. Make sure POSTGRES_DSN or DATABASE_URL is set in production!")
+
+print(f"Bot token: {TOKEN[:10]}...")  # Показываем первые 10 символов токена
+print(f"Database DSN: {DB_DSN[:50]}...")  # Показываем первые 50 символов DSN
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 user_states = {}
@@ -93,14 +108,40 @@ add_game_states = {}
 
 @dp.callback_query(F.data == 'main_schedule')
 async def main_schedule_btn(callback: CallbackQuery):
-    await show_schedule(callback.message)
-    await callback.answer()
+    try:
+        await callback.answer()  # Отвечаем сразу, чтобы убрать loading
+        await show_schedule(callback.message)
+    except Exception as e:
+        print(f"Error in main_schedule_btn: {e}")
+        try:
+            await callback.answer("Произошла ошибка при загрузке расписания")
+        except:
+            pass
+        # Перезапускаем меню
+        try:
+            lang = get_lang(callback.from_user.id)
+            is_admin = callback.from_user.id in ADMIN_IDS
+            await callback.message.answer("Выберите действие:", reply_markup=reply_menu(is_admin, lang))
+        except Exception as fallback_error:
+            print(f"Fallback error in main_schedule_btn: {fallback_error}")
 # PostgreSQL pool helper
 _pg_pool = None
 async def get_pg_pool():
     global _pg_pool
     if _pg_pool is None:
-        _pg_pool = await asyncpg.create_pool(dsn=DB_DSN)
+        try:
+            _pg_pool = await asyncpg.create_pool(
+                dsn=DB_DSN, 
+                min_size=1, 
+                max_size=5, 
+                command_timeout=30,
+                server_settings={'application_name': 'volleyball_bot'}
+            )
+            print("Database pool created successfully")
+        except Exception as e:
+            print(f"Failed to create database pool: {e}")
+            # Попытка создать простое подключение
+            _pg_pool = await asyncpg.create_pool(dsn=DB_DSN, command_timeout=30)
     return _pg_pool
 
 LANGUAGES = {
@@ -378,80 +419,86 @@ def clear_post_creation_state(user_id):
     '📅 Расписание', '📅 Розклад', '📅 Schedule'
 ]))
 async def show_schedule(message: Message):
-    # Очищаем состояние добавления игры при переходе к другому действию
-    clear_add_game_state(message.from_user.id)
-    # Очищаем состояние создания поста при переходе к другому действию
-    clear_post_creation_state(message.from_user.id)
-    
-    user_id = message.from_user.id
-    
-    # Убеждаемся, что язык пользователя загружен
-    lang = await ensure_user_lang(user_id)
+    try:
+        # Очищаем состояние добавления игры при переходе к другому действию
+        clear_add_game_state(message.from_user.id)
+        # Очищаем состояние создания поста при переходе к другому действию
+        clear_post_creation_state(message.from_user.id)
+        
+        user_id = message.from_user.id
+        
+        # Убеждаемся, что язык пользователя загружен
+        lang = await ensure_user_lang(user_id)
 
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        games = await conn.fetch('SELECT id, date, time_start, time_end, place, price, extra_info FROM games')
-        if not games:
-            await message.answer(TEXTS['schedule_empty'][lang])
-            return
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            games = await conn.fetch('SELECT id, date, time_start, time_end, place, price, extra_info FROM games')
+            if not games:
+                await message.answer(TEXTS['schedule_empty'][lang])
+                return
 
-        for game in games:
-            game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
-            # Определяем день недели и скрываем год
-            try:
-                day, month, year = map(int, date.split('.'))
-                dt = datetime.date(year, month, day)
-                weekday = dt.strftime('%A')
-                weekday_short_ru = {
-                    'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'вс'
-                }
-                weekday_short_uk = {
-                    'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'нд'
-                }
-                weekday_short_en = {
-                    'Monday': 'Mon', 'Tuesday': 'Tue', 'Wednesday': 'Wed', 'Thursday': 'Thu', 'Friday': 'Fri', 'Saturday': 'Sat', 'Sunday': 'Sun'
-                }
-                weekday_short_map = {'ru': weekday_short_ru, 'uk': weekday_short_uk, 'en': weekday_short_en}
-                weekday_str = weekday_short_map.get(lang, weekday_short_en).get(weekday)
-                if not weekday_str:
-                    weekday_str = weekday_short_en.get(weekday, weekday)
-                # Форматируем дату без года
-                date_no_year = '.'.join(date.split('.')[:2])
-            except Exception:
-                weekday_str = ''
-                date_no_year = date
-            registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
-            main_list = registrations[:14]
-            reserve_list = registrations[14:]
-            # Формируем ссылку на Google Maps
-            maps_url = f'https://www.google.com/maps/search/?api=1&query={place.replace(" ", "+")}'
-            place_link = f'<a href="{maps_url}">{place}</a>'
-            # Если личные сообщения, делаем имя ссылкой на адрес, а username — на личку
-            is_private = message.chat.type == 'private' if hasattr(message.chat, 'type') else getattr(message.chat, 'type', None) == 'private'
-            def name_link(name, username):
-                if username:
-                    return f'<a href="https://t.me/{username.lstrip("@").strip()}">{name}</a>'
-                return name
-            reg_text = ""
-            for idx, r in enumerate(main_list, 1):
-                reg_text += f"{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
-            if reserve_list:
-                reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
-                for idx, r in enumerate(reserve_list, 1):
-                    reg_text += f"R{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
-            if not reg_text:
-                reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
-            extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
-            text = (f"📅 {date_no_year} ({weekday_str})\n"
-                    f"⏰ {time_start} - {time_end}\n"
-                    f"🏟️ {place_link}\n"
-                    f"💵 {price} PLN\n"
-                    f"{extra_info_text}"
-                    f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
-            ])
-            await message.answer(text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+            for game in games:
+                game_id, date, time_start, time_end, place, price, extra_info = game['id'], game['date'], game['time_start'], game['time_end'], game['place'], game['price'], game.get('extra_info', '')
+                # Определяем день недели и скрываем год
+                try:
+                    day, month, year = map(int, date.split('.'))
+                    dt = datetime.date(year, month, day)
+                    weekday = dt.strftime('%A')
+                    weekday_short_ru = {
+                        'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'вс'
+                    }
+                    weekday_short_uk = {
+                        'Monday': 'пн', 'Tuesday': 'вт', 'Wednesday': 'ср', 'Thursday': 'чт', 'Friday': 'пт', 'Saturday': 'сб', 'Sunday': 'нд'
+                    }
+                    weekday_short_en = {
+                        'Monday': 'Mon', 'Tuesday': 'Tue', 'Wednesday': 'Wed', 'Thursday': 'Thu', 'Friday': 'Fri', 'Saturday': 'Sat', 'Sunday': 'Sun'
+                    }
+                    weekday_short_map = {'ru': weekday_short_ru, 'uk': weekday_short_uk, 'en': weekday_short_en}
+                    weekday_str = weekday_short_map.get(lang, weekday_short_en).get(weekday)
+                    if not weekday_str:
+                        weekday_str = weekday_short_en.get(weekday, weekday)
+                    # Форматируем дату без года
+                    date_no_year = '.'.join(date.split('.')[:2])
+                except Exception:
+                    weekday_str = ''
+                    date_no_year = date
+                registrations = await conn.fetch('SELECT full_name, username, paid FROM registrations WHERE game_id = $1 ORDER BY id', game_id)
+                main_list = registrations[:14]
+                reserve_list = registrations[14:]
+                # Формируем ссылку на Google Maps
+                maps_url = f'https://www.google.com/maps/search/?api=1&query={place.replace(" ", "+")}'
+                place_link = f'<a href="{maps_url}">{place}</a>'
+                # Если личные сообщения, делаем имя ссылкой на адрес, а username — на личку
+                is_private = message.chat.type == 'private' if hasattr(message.chat, 'type') else getattr(message.chat, 'type', None) == 'private'
+                def name_link(name, username):
+                    if username:
+                        return f'<a href="https://t.me/{username.lstrip("@").strip()}">{name}</a>'
+                    return name
+                reg_text = ""
+                for idx, r in enumerate(main_list, 1):
+                    reg_text += f"{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
+                if reserve_list:
+                    reg_text += "\n" + {'ru':'Резерв:','uk':'Резерв:','en':'Reserve:'}[lang] + "\n"
+                    for idx, r in enumerate(reserve_list, 1):
+                        reg_text += f"R{idx}. {name_link(r['full_name'], r['username'])} {'✅' if r['paid'] else ''}\n"
+                if not reg_text:
+                    reg_text = {'ru':'Нет записанных.','uk':'Немає записаних.','en':'No registrations.'}[lang]
+                extra_info_text = f"📝 {extra_info}\n" if extra_info else ""
+                text = (f"📅 {date_no_year} ({weekday_str})\n"
+                        f"⏰ {time_start} - {time_end}\n"
+                        f"🏟️ {place_link}\n"
+                        f"💵 {price} PLN\n"
+                        f"{extra_info_text}"
+                        f"{ {'ru':'Записались:','uk':'Записались:','en':'Registered:'}[lang] }\n{reg_text}")
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text={'ru':'Записаться','uk':'Записатися','en':'Register'}[lang], callback_data=f'register_{game_id}')],
+                ])
+                await message.answer(text, reply_markup=kb, parse_mode='HTML', disable_web_page_preview=True)
+    except Exception as e:
+        print(f"Error in show_schedule: {e}")
+        lang = await ensure_user_lang(message.from_user.id)
+        await message.answer({'ru':'Произошла ошибка при загрузке расписания','uk':'Сталася помилка при завантаженні розкладу','en':'Error loading schedule'}[lang])
+
 @dp.callback_query(F.data.startswith('delreg_'))
 async def delreg(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
@@ -582,78 +629,92 @@ async def skip_extra_info(callback: CallbackQuery):
 
 @dp.callback_query(F.data == 'post_with_schedule_button')
 async def post_with_schedule_button(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
-    user_id = callback.from_user.id
-    state = user_states.get(user_id)
-    
-    if not state or state.get('step') != 'post_button_choice':
-        await callback.answer()
-        return
+    try:
+        await callback.answer()  # Отвечаем сразу
+        lang = get_lang(callback.from_user.id)
+        user_id = callback.from_user.id
+        state = user_states.get(user_id)
         
-    post_text = state.get('post_text')
-    if not post_text:
-        await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
-        await callback.answer()
-        return
-    
-    # Создаем кнопку расписания
-    schedule_button = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang], callback_data='main_schedule')]
-    ])
-    
-    # Сохраняем пост в базу данных
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
-        users = await conn.fetch('SELECT user_id FROM users')
-    
-    # Отправляем пост всем пользователям с кнопкой
-    sent_count = 0
-    for u in users:
+        if not state or state.get('step') != 'post_button_choice':
+            return
+            
+        post_text = state.get('post_text')
+        if not post_text:
+            await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
+            return
+        
+        # Создаем кнопку расписания
+        schedule_button = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang], callback_data='main_schedule')]
+        ])
+        
+        # Сохраняем пост в базу данных
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
+            users = await conn.fetch('SELECT user_id FROM users')
+        
+        # Отправляем пост всем пользователям с кнопкой
+        sent_count = 0
+        for u in users:
+            try:
+                await bot.send_message(u['user_id'], post_text, reply_markup=schedule_button)
+                sent_count += 1
+            except Exception as e:
+                print(f"Failed to send post to user {u['user_id']}: {e}")
+        
+        user_states.pop(user_id, None)
+        await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!','en':f'Post with button sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+    except Exception as e:
+        print(f"Error in post_with_schedule_button: {e}")
         try:
-            await bot.send_message(u['user_id'], post_text, reply_markup=schedule_button)
-            sent_count += 1
-        except Exception:
+            await callback.answer("Произошла ошибка при отправке поста")
+            lang = get_lang(callback.from_user.id)
+            await callback.message.answer({'ru':'Произошла ошибка при отправке поста','uk':'Сталася помилка при надсиланні поста','en':'Error sending post'}[lang], reply_markup=reply_menu(True, lang))
+        except:
             pass
-    
-    user_states.pop(user_id, None)
-    await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!','en':f'Post with button sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
-    await callback.answer()
 
 @dp.callback_query(F.data == 'post_without_button')
 async def post_without_button(callback: CallbackQuery):
-    lang = get_lang(callback.from_user.id)
-    user_id = callback.from_user.id
-    state = user_states.get(user_id)
-    
-    if not state or state.get('step') != 'post_button_choice':
-        await callback.answer()
-        return
+    try:
+        await callback.answer()  # Отвечаем сразу
+        lang = get_lang(callback.from_user.id)
+        user_id = callback.from_user.id
+        state = user_states.get(user_id)
         
-    post_text = state.get('post_text')
-    if not post_text:
-        await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
-        await callback.answer()
-        return
-    
-    # Сохраняем пост в базу данных
-    pool = await get_pg_pool()
-    async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
-        users = await conn.fetch('SELECT user_id FROM users')
-    
-    # Отправляем пост всем пользователям без кнопки
-    sent_count = 0
-    for u in users:
+        if not state or state.get('step') != 'post_button_choice':
+            return
+            
+        post_text = state.get('post_text')
+        if not post_text:
+            await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
+            return
+        
+        # Сохраняем пост в базу данных
+        pool = await get_pg_pool()
+        async with pool.acquire() as conn:
+            await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
+            users = await conn.fetch('SELECT user_id FROM users')
+        
+        # Отправляем пост всем пользователям без кнопки
+        sent_count = 0
+        for u in users:
+            try:
+                await bot.send_message(u['user_id'], post_text)
+                sent_count += 1
+            except Exception as e:
+                print(f"Failed to send post to user {u['user_id']}: {e}")
+        
+        user_states.pop(user_id, None)
+        await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+    except Exception as e:
+        print(f"Error in post_without_button: {e}")
         try:
-            await bot.send_message(u['user_id'], post_text)
-            sent_count += 1
-        except Exception:
+            await callback.answer("Произошла ошибка при отправке поста")
+            lang = get_lang(callback.from_user.id)
+            await callback.message.answer({'ru':'Произошла ошибка при отправке поста','uk':'Сталася помилка при надсиланні поста','en':'Error sending post'}[lang], reply_markup=reply_menu(True, lang))
+        except:
             pass
-    
-    user_states.pop(user_id, None)
-    await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
-    await callback.answer()
 
 @dp.callback_query(F.data == 'cancel_addgame')
 async def cancel_addgame(callback: CallbackQuery):
@@ -1125,6 +1186,29 @@ if __name__ == "__main__":
 
     async def on_startup(dispatcher):
         await init_db()
+        print("Bot initialized and database connected!")
+        
+        # Отправляем уведомление админам о запуске (опционально)
+        try:
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(admin_id, "🤖 Бот перезапущен и готов к работе!")
+                except:
+                    pass  # Игнорируем ошибки отправки
+        except Exception as e:
+            print(f"Could not send startup notification: {e}")
+
+    # Глобальная обработка ошибок для callback_query
+    @dp.callback_query()
+    async def catch_all_callback_query(callback: CallbackQuery):
+        try:
+            # Если callback не был обработан выше, отвечаем на него
+            await callback.answer("Неизвестная команда")
+            lang = get_lang(callback.from_user.id)
+            is_admin = callback.from_user.id in ADMIN_IDS
+            await callback.message.answer({'ru':'Неизвестная команда. Пожалуйста, выберите действие:','uk':'Невідома команда. Будь ласка, виберіть дію:','en':'Unknown command. Please choose an action:'}[lang], reply_markup=reply_menu(is_admin, lang))
+        except Exception as e:
+            print(f"Error in catch_all_callback_query: {e}")
 
     dp.startup.register(on_startup)
 
@@ -1133,11 +1217,43 @@ if __name__ == "__main__":
         # Режим продакшена - запускаем веб-сервер для Render/Heroku
         async def handle(request):
             return web.Response(text="Bot is running!")
+        
+        async def health_check(request):
+            # Проверяем состояние бота и базы данных
+            try:
+                pool = await get_pg_pool()
+                async with pool.acquire() as conn:
+                    await conn.fetchval('SELECT 1')
+                return web.Response(text="OK", status=200)
+            except Exception as e:
+                return web.Response(text=f"Error: {e}", status=500)
+        
+        async def status(request):
+            import json
+            status_info = {
+                "status": "running",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "service": "volleyball-bot"
+            }
+            return web.Response(text=json.dumps(status_info), content_type='application/json')
+            
+        async def monitor_page(request):
+            # Читаем HTML файл для мониторинга
+            try:
+                with open('monitor.html', 'r', encoding='utf-8') as f:
+                    html_content = f.read()
+                return web.Response(text=html_content, content_type='text/html')
+            except FileNotFoundError:
+                return web.Response(text="Monitor page not found", status=404)
 
         async def main():
             # Создаем веб-приложение
             app = web.Application()
             app.router.add_get("/", handle)
+            app.router.add_get("/health", health_check)
+            app.router.add_get("/status", status)
+            app.router.add_get("/ping", handle)
+            app.router.add_get("/monitor", monitor_page)
             
             # Создаем runner для веб-сервера
             runner = web.AppRunner(app)
@@ -1148,8 +1264,32 @@ if __name__ == "__main__":
             await site.start()
             print(f"Web server started on port {port}")
             
-            # Запускаем бота
-            await dp.start_polling(bot)
+            # Задача для поддержания активности (самопинг каждые 10 минут)
+            async def keep_alive():
+                import aiohttp
+                url = f"https://volleyball-bot-last.onrender.com/ping"
+                while True:
+                    try:
+                        await asyncio.sleep(600)  # 10 минут
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(url, timeout=30) as response:
+                                print(f"Keep-alive ping: {response.status}")
+                    except Exception as e:
+                        print(f"Keep-alive error: {e}")
+            
+            # Запускаем keep-alive в фоне
+            asyncio.create_task(keep_alive())
+            
+            # Запускаем бота с обработкой ошибок
+            try:
+                print("Starting bot polling...")
+                await dp.start_polling(bot, skip_updates=True)
+            except Exception as e:
+                print(f"Bot polling error: {e}")
+                # Попытка перезапуска через 5 секунд
+                await asyncio.sleep(5)
+                print("Attempting to restart bot...")
+                await dp.start_polling(bot, skip_updates=True)
 
         asyncio.run(main())
     else:

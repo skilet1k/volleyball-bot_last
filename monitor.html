@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Volleyball Bot Status</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { background: white; padding: 20px; border-radius: 8px; max-width: 600px; margin: 0 auto; }
+        .status { padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .online { background: #d4edda; color: #155724; }
+        .offline { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏐 Volleyball Bot Monitor</h1>
+        <div id="status" class="status info">Проверяем статус...</div>
+        <div id="last-check" class="info">Последняя проверка: загружается...</div>
+        
+        <h3>Доступные эндпоинты:</h3>
+        <ul>
+            <li><a href="/health">/health</a> - Проверка работоспособности</li>
+            <li><a href="/status">/status</a> - Детальный статус</li>
+            <li><a href="/ping">/ping</a> - Простой пинг</li>
+        </ul>
+        
+        <div class="info">
+            <p><strong>Важно:</strong> Бесплатный план Render засыпает через 15 минут неактивности.</p>
+            <p>Бот автоматически пингует себя каждые 10 минут для поддержания активности.</p>
+        </div>
+    </div>
+    
+    <script>
+        async function checkStatus() {
+            try {
+                const response = await fetch('/health');
+                const statusDiv = document.getElementById('status');
+                const lastCheckDiv = document.getElementById('last-check');
+                
+                if (response.ok) {
+                    statusDiv.className = 'status online';
+                    statusDiv.textContent = '✅ Бот работает нормально';
+                } else {
+                    statusDiv.className = 'status offline';
+                    statusDiv.textContent = '❌ Проблемы с ботом';
+                }
+                
+                lastCheckDiv.textContent = `Последняя проверка: ${new Date().toLocaleString('ru-RU')}`;
+            } catch (error) {
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = 'status offline';
+                statusDiv.textContent = '❌ Не удалось подключиться к боту';
+            }
+        }
+        
+        // Проверяем статус при загрузке
+        checkStatus();
+        
+        // Проверяем каждые 30 секунд
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>
