@@ -83,6 +83,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
 import datetime
+from googletrans import Translator
 
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
 
@@ -105,6 +106,37 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 user_states = {}
 add_game_states = {}
+
+# Инициализируем переводчик
+translator = Translator()
+
+async def translate_text(text, target_lang):
+    """Переводит текст на указанный язык"""
+    try:
+        # Определяем коды языков для Google Translate
+        lang_codes = {
+            'ru': 'ru',
+            'uk': 'uk', 
+            'en': 'en'
+        }
+        
+        target_code = lang_codes.get(target_lang, 'ru')
+        
+        # Определяем исходный язык текста
+        detected = translator.detect(text)
+        source_lang = detected.lang
+        
+        # Если исходный язык уже совпадает с целевым, возвращаем оригинал
+        if source_lang == target_code:
+            return text
+        
+        # Переводим текст
+        translated = translator.translate(text, src=source_lang, dest=target_code)
+        return translated.text
+    except Exception as e:
+        print(f"Translation error: {e}")
+        # Если перевод не удался, возвращаем оригинальный текст
+        return text
 
 @dp.callback_query(F.data == 'main_schedule')
 async def main_schedule_btn(callback: CallbackQuery):
@@ -643,28 +675,33 @@ async def post_with_schedule_button(callback: CallbackQuery):
             await callback.message.answer({'ru':'Ошибка: текст поста не найден.','uk':'Помилка: текст посту не знайдено.','en':'Error: post text not found.'}[lang])
             return
         
-        # Создаем кнопку расписания
-        schedule_button = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[lang], callback_data='main_schedule')]
-        ])
-        
         # Сохраняем пост в базу данных
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
-            users = await conn.fetch('SELECT user_id FROM users')
+            users = await conn.fetch('SELECT user_id, lang FROM users')
         
         # Отправляем пост всем пользователям с кнопкой
         sent_count = 0
         for u in users:
             try:
-                await bot.send_message(u['user_id'], post_text, reply_markup=schedule_button)
+                user_lang = u['lang'] if u['lang'] else 'ru'
+                
+                # Переводим текст поста на язык пользователя
+                translated_post = await translate_text(post_text, user_lang)
+                
+                # Создаем кнопку расписания на языке пользователя
+                schedule_button = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[user_lang], callback_data='main_schedule')]
+                ])
+                
+                await bot.send_message(u['user_id'], translated_post, reply_markup=schedule_button)
                 sent_count += 1
             except Exception as e:
                 print(f"Failed to send post to user {u['user_id']}: {e}")
         
         user_states.pop(user_id, None)
-        await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!','en':f'Post with button sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+        await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!\n📝 Текст автоматически переведен на выбранный язык каждого пользователя.','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!\n📝 Текст автоматично перекладено на обрану мову кожного користувача.','en':f'Post with button sent to {sent_count} users!\n📝 Text automatically translated to each user\'s selected language.'}[lang], reply_markup=reply_menu(True, lang))
     except Exception as e:
         print(f"Error in post_with_schedule_button: {e}")
         try:
@@ -694,19 +731,24 @@ async def post_without_button(callback: CallbackQuery):
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             await conn.execute('INSERT INTO posts (text, created_at) VALUES ($1, $2)', post_text, datetime.datetime.now())
-            users = await conn.fetch('SELECT user_id FROM users')
+            users = await conn.fetch('SELECT user_id, lang FROM users')
         
         # Отправляем пост всем пользователям без кнопки
         sent_count = 0
         for u in users:
             try:
-                await bot.send_message(u['user_id'], post_text)
+                user_lang = u['lang'] if u['lang'] else 'ru'
+                
+                # Переводим текст поста на язык пользователя
+                translated_post = await translate_text(post_text, user_lang)
+                
+                await bot.send_message(u['user_id'], translated_post)
                 sent_count += 1
             except Exception as e:
                 print(f"Failed to send post to user {u['user_id']}: {e}")
         
         user_states.pop(user_id, None)
-        await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!','uk':f'Пост надіслано {sent_count} користувачам!','en':f'Post sent to {sent_count} users!'}[lang], reply_markup=reply_menu(True, lang))
+        await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!\n📝 Текст автоматически переведен на выбранный язык каждого пользователя.','uk':f'Пост надіслано {sent_count} користувачам!\n📝 Текст автоматично перекладено на обрану мову кожного користувача.','en':f'Post sent to {sent_count} users!\n📝 Text automatically translated to each user\'s selected language.'}[lang], reply_markup=reply_menu(True, lang))
     except Exception as e:
         print(f"Error in post_without_button: {e}")
         try:
