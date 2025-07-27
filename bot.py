@@ -83,9 +83,15 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
 import datetime
+try:
+    import deepl
+    DEEPL_AVAILABLE = True
+except ImportError:
+    DEEPL_AVAILABLE = False
 from deep_translator import GoogleTranslator
 
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
+DEEPL_API_KEY = os.getenv('DEEPL_API_KEY')  # Получаем DeepL API ключ из переменной окружения
 
 ADMIN_IDS = [760746564, 683243528, 1202044081]
 # Railway использует DATABASE_URL, Render использует POSTGRES_DSN
@@ -108,79 +114,134 @@ user_states = {}
 add_game_states = {}
 
 async def translate_text(text, target_lang):
-    """Переводит текст на указанный язык с улучшенной логикой"""
+    """Высококачественный перевод текста с использованием DeepL (при наличии) или Google Translate"""
     try:
-        # Определяем коды языков для Google Translate
-        lang_codes = {
+        # Если текст пустой, возвращаем как есть
+        if not text or not text.strip():
+            return text
+            
+        # Определяем коды языков
+        deepl_lang_codes = {
+            'ru': 'RU',
+            'uk': 'UK', 
+            'en': 'EN-US'
+        }
+        
+        google_lang_codes = {
             'ru': 'ru',
             'uk': 'uk', 
             'en': 'en'
         }
         
-        target_code = lang_codes.get(target_lang, 'ru')
+        target_code_deepl = deepl_lang_codes.get(target_lang, 'RU')
+        target_code_google = google_lang_codes.get(target_lang, 'ru')
         
-        # Если текст пустой, возвращаем как есть
-        if not text or not text.strip():
-            return text
+        # Умное определение исходного языка
+        def detect_source_language(text):
+            text_lower = text.lower()
             
-        # Улучшенная эвристика для определения языка по символам
-        has_cyrillic = any('\u0400' <= char <= '\u04FF' for char in text)
-        
-        # Специфические украинские символы
-        ukrainian_chars = set('іїєґ')
-        ukrainian_count = sum(1 for char in text.lower() if char in ukrainian_chars)
-        
-        # Специфические русские символы 
-        russian_chars = set('ыъэё')
-        russian_count = sum(1 for char in text.lower() if char in russian_chars)
-        
-        # Слова-маркеры для языков
-        ukrainian_words = {'гра', 'грою', 'записуйтеся', 'запишіться', 'приходьте'}
-        russian_words = {'игра', 'игрой', 'записывайтесь', 'запишитесь', 'приходите'}
-        
-        text_lower = text.lower()
-        has_ukrainian_words = any(word in text_lower for word in ukrainian_words)
-        has_russian_words = any(word in text_lower for word in russian_words)
-        
-        if has_cyrillic:
-            # Определяем украинский vs русский по приоритету
-            if ukrainian_count > 0:  # Приоритет украинским символам
-                detected_lang = 'uk'
-            elif russian_count > 0:  # Затем русским символам
-                detected_lang = 'ru'
-            elif has_ukrainian_words and not has_russian_words:  # Только украинские слова
-                detected_lang = 'uk'
-            elif has_russian_words and not has_ukrainian_words:  # Только русские слова
-                detected_lang = 'ru'
+            # Проверяем на кириллицу
+            has_cyrillic = any('\u0400' <= char <= '\u04FF' for char in text)
+            
+            if not has_cyrillic:
+                return 'en'
+                
+            # Специфические символы для украинского
+            ukrainian_chars = set('іїєґ')
+            ukrainian_count = sum(1 for char in text_lower if char in ukrainian_chars)
+            
+            # Специфические символы для русского
+            russian_chars = set('ыъэё')
+            russian_count = sum(1 for char in text_lower if char in russian_chars)
+            
+            # Характерные слова-маркеры
+            ukrainian_markers = {
+                'гра', 'грою', 'записуйтеся', 'запишіться', 'приходьте', 'грати', 
+                'волейбол', 'зал', 'організація', 'розклад', 'записи', 'ігри',
+                'додати', 'видалити', 'параметри', 'мова', 'ресурси', 'чат'
+            }
+            
+            russian_markers = {
+                'игра', 'игрой', 'записывайтесь', 'запишитесь', 'приходите', 'играть',
+                'волейбол', 'зал', 'организация', 'расписание', 'записи', 'игры',
+                'добавить', 'удалить', 'параметры', 'язык', 'ресурсы', 'чат'
+            }
+            
+            # Подсчитываем совпадения
+            ukrainian_words = sum(1 for word in ukrainian_markers if word in text_lower)
+            russian_words = sum(1 for word in russian_markers if word in text_lower)
+            
+            # Определяем язык по приоритету
+            if ukrainian_count > 0:  # Есть специфические украинские символы
+                return 'uk'
+            elif russian_count > 0:  # Есть специфические русские символы
+                return 'ru'
+            elif ukrainian_words > russian_words:  # Больше украинских слов
+                return 'uk'
+            elif russian_words > ukrainian_words:  # Больше русских слов
+                return 'ru'
             else:
-                # Fallback: если неясно, используем auto-detection
-                detected_lang = 'ru'  # По умолчанию русский для кириллицы
-        else:
-            detected_lang = 'en'
+                # По умолчанию русский для кириллицы (более безопасно)
+                return 'ru'
         
-        print(f"Translation debug: text='{text[:50]}...', detected={detected_lang}, target={target_code}")
+        detected_lang = detect_source_language(text)
+        
+        print(f"🔍 Translation: text='{text[:50]}...', detected={detected_lang}, target={target_lang}")
         
         # Если исходный и целевой языки одинаковые, не переводим
-        if detected_lang == target_code:
-            print(f"Same language detected ({detected_lang}), returning original")
+        if detected_lang == target_lang:
+            print(f"✅ Same language detected ({detected_lang}), returning original")
             return text
         
-        # Переводим с помощью deep-translator
-        translator = GoogleTranslator(source=detected_lang, target=target_code)
-        translated = translator.translate(text)
+        # Пытаемся использовать DeepL (более качественный переводчик)
+        if DEEPL_AVAILABLE and DEEPL_API_KEY:
+            try:
+                translator = deepl.Translator(DEEPL_API_KEY)
+                
+                # Определяем исходный язык для DeepL
+                source_lang_deepl = deepl_lang_codes.get(detected_lang, 'RU')
+                
+                # Специальный контекст для волейбольных терминов
+                result = translator.translate_text(
+                    text, 
+                    source_lang=source_lang_deepl,
+                    target_lang=target_code_deepl,
+                    preserve_formatting=True,
+                    formality='default'
+                )
+                
+                translated = result.text if hasattr(result, 'text') else str(result)
+                print(f"🚀 DeepL translation: '{translated[:50]}...'")
+                
+                # Проверяем качество перевода
+                if translated and translated.strip() != text.strip():
+                    return translated
+                else:
+                    print("⚠️ DeepL translation failed, falling back to Google")
+                    
+            except Exception as e:
+                print(f"❌ DeepL error: {e}, falling back to Google")
         
-        print(f"Translation result: '{translated[:50]}...'")
-        
-        # Проверяем качество перевода
-        if not translated or translated.strip() == text.strip():
-            print("Translation failed or identical, returning original")
-            return text
+        # Fallback на Google Translate
+        try:
+            translator = GoogleTranslator(source=detected_lang, target=target_code_google)
+            translated = translator.translate(text)
             
-        return translated
+            print(f"🔄 Google translation: '{translated[:50]}...'")
+            
+            # Проверяем качество перевода
+            if not translated or translated.strip() == text.strip():
+                print("⚠️ Google translation failed or identical, returning original")
+                return text
+                
+            return translated
+            
+        except Exception as e:
+            print(f"❌ Google translation error: {e}")
+            return text
         
     except Exception as e:
-        print(f"Translation error: {e}")
-        # Если перевод не удался, возвращаем оригинальный текст
+        print(f"💥 Critical translation error: {e}")
         return text
 
 @dp.callback_query(F.data == 'main_schedule')
@@ -407,21 +468,23 @@ TEXTS = {
 }
 
 def get_lang(user_id):
+    """Получает язык пользователя из состояния или возвращает русский по умолчанию"""
     return user_states.get(user_id, {}).get('lang', 'ru')
 
 async def ensure_user_lang(user_id):
-    """Убеждается, что язык пользователя загружен в user_states"""
+    """Убеждается, что язык пользователя загружен в user_states из базы данных"""
     if user_id not in user_states or 'lang' not in user_states[user_id]:
         # Загружаем из базы данных
         pool = await get_pg_pool()
         async with pool.acquire() as conn:
             user_data = await conn.fetchrow('SELECT lang FROM users WHERE user_id = $1', user_id)
-            if user_data:
-                lang = user_data['lang'] if user_data['lang'] else 'ru'
+            if user_data and user_data['lang']:
+                lang = user_data['lang']
+                print(f"📖 Loaded user {user_id} language from DB: {lang}")
             else:
-                # Новый пользователь - создаем запись в базе
-                lang = 'ru'
-                await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', user_id, lang)
+                # Новый пользователь - НЕ создаем запись автоматически, пусть выберет язык
+                lang = 'ru'  # Временный язык по умолчанию
+                print(f"👤 New user {user_id}, using default language: {lang}")
             
             # Обновляем user_states
             if user_id not in user_states:
@@ -470,8 +533,12 @@ async def parameters_menu(message: Message):
 async def set_language(callback: CallbackQuery):
     lang = callback.data.split('_')[1]
     user_id = callback.from_user.id
-    user_states[user_id] = {'lang': lang}
     is_admin = user_id in ADMIN_IDS
+    
+    # Сохраняем язык в состоянии пользователя (сохраняя остальные данные)
+    if user_id not in user_states:
+        user_states[user_id] = {}
+    user_states[user_id]['lang'] = lang
     
     # Сохраняем пользователя в БД с обновлением языка
     pool = await get_pg_pool()
@@ -481,7 +548,7 @@ async def set_language(callback: CallbackQuery):
             ON CONFLICT (user_id) DO UPDATE SET lang = $2
         ''', user_id, lang)
     
-    print(f"User {user_id} changed language to: {lang}")
+    print(f"🔄 User {user_id} explicitly changed language to: {lang}")
     await callback.message.answer({'ru':'Язык изменён.','uk':'Мову змінено.','en':'Language changed.'}[lang], reply_markup=reply_menu(is_admin, lang))
     await callback.answer()
 
@@ -493,12 +560,19 @@ async def set_language_first_time(callback: CallbackQuery):
     is_admin = user_id in ADMIN_IDS
     
     # Сохраняем язык в состоянии пользователя
-    user_states[user_id] = {'lang': lang}
+    if user_id not in user_states:
+        user_states[user_id] = {}
+    user_states[user_id]['lang'] = lang
     
     # Сохраняем пользователя в базу данных
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2)', user_id, lang)
+        await conn.execute('''
+            INSERT INTO users (user_id, lang) VALUES ($1, $2) 
+            ON CONFLICT (user_id) DO UPDATE SET lang = $2
+        ''', user_id, lang)
+    
+    print(f"👋 New user {user_id} chose language: {lang}")
     
     # Показываем приветственное описание бота
     welcome_description = TEXTS['welcome_description'][lang]

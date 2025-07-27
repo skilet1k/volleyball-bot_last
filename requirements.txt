@@ -3,3 +3,4 @@ aiohttp>=3.8.6
 asyncpg>=0.27.0
 pydantic>=1.10.13
 deep-translator
+deepl
