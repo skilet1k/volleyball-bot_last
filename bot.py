@@ -108,7 +108,7 @@ user_states = {}
 add_game_states = {}
 
 async def translate_text(text, target_lang):
-    """Переводит текст на указанный язык"""
+    """Переводит текст на указанный язык с улучшенной логикой"""
     try:
         # Определяем коды языков для Google Translate
         lang_codes = {
@@ -119,13 +119,65 @@ async def translate_text(text, target_lang):
         
         target_code = lang_codes.get(target_lang, 'ru')
         
-        # Используем deep-translator для перевода
-        # Создаем переводчик с автоопределением исходного языка
-        translator = GoogleTranslator(source='auto', target=target_code)
+        # Если текст пустой, возвращаем как есть
+        if not text or not text.strip():
+            return text
+            
+        # Улучшенная эвристика для определения языка по символам
+        has_cyrillic = any('\u0400' <= char <= '\u04FF' for char in text)
+        
+        # Специфические украинские символы
+        ukrainian_chars = set('іїєґ')
+        ukrainian_count = sum(1 for char in text.lower() if char in ukrainian_chars)
+        
+        # Специфические русские символы 
+        russian_chars = set('ыъэё')
+        russian_count = sum(1 for char in text.lower() if char in russian_chars)
+        
+        # Слова-маркеры для языков
+        ukrainian_words = {'гра', 'грою', 'записуйтеся', 'запишіться', 'приходьте'}
+        russian_words = {'игра', 'игрой', 'записывайтесь', 'запишитесь', 'приходите'}
+        
+        text_lower = text.lower()
+        has_ukrainian_words = any(word in text_lower for word in ukrainian_words)
+        has_russian_words = any(word in text_lower for word in russian_words)
+        
+        if has_cyrillic:
+            # Определяем украинский vs русский по приоритету
+            if ukrainian_count > 0:  # Приоритет украинским символам
+                detected_lang = 'uk'
+            elif russian_count > 0:  # Затем русским символам
+                detected_lang = 'ru'
+            elif has_ukrainian_words and not has_russian_words:  # Только украинские слова
+                detected_lang = 'uk'
+            elif has_russian_words and not has_ukrainian_words:  # Только русские слова
+                detected_lang = 'ru'
+            else:
+                # Fallback: если неясно, используем auto-detection
+                detected_lang = 'ru'  # По умолчанию русский для кириллицы
+        else:
+            detected_lang = 'en'
+        
+        print(f"Translation debug: text='{text[:50]}...', detected={detected_lang}, target={target_code}")
+        
+        # Если исходный и целевой языки одинаковые, не переводим
+        if detected_lang == target_code:
+            print(f"Same language detected ({detected_lang}), returning original")
+            return text
+        
+        # Переводим с помощью deep-translator
+        translator = GoogleTranslator(source=detected_lang, target=target_code)
         translated = translator.translate(text)
         
-        # Если перевод вернул тот же текст, это может означать что язык уже правильный
+        print(f"Translation result: '{translated[:50]}...'")
+        
+        # Проверяем качество перевода
+        if not translated or translated.strip() == text.strip():
+            print("Translation failed or identical, returning original")
+            return text
+            
         return translated
+        
     except Exception as e:
         print(f"Translation error: {e}")
         # Если перевод не удался, возвращаем оригинальный текст
@@ -417,12 +469,19 @@ async def parameters_menu(message: Message):
 @dp.callback_query(F.data.startswith('lang_'))
 async def set_language(callback: CallbackQuery):
     lang = callback.data.split('_')[1]
-    user_states[callback.from_user.id] = {'lang': lang}
-    is_admin = callback.from_user.id in ADMIN_IDS
-    # Сохраняем пользователя
+    user_id = callback.from_user.id
+    user_states[user_id] = {'lang': lang}
+    is_admin = user_id in ADMIN_IDS
+    
+    # Сохраняем пользователя в БД с обновлением языка
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
-        await conn.execute('INSERT INTO users (user_id, lang) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING', callback.from_user.id, lang)
+        await conn.execute('''
+            INSERT INTO users (user_id, lang) VALUES ($1, $2) 
+            ON CONFLICT (user_id) DO UPDATE SET lang = $2
+        ''', user_id, lang)
+    
+    print(f"User {user_id} changed language to: {lang}")
     await callback.message.answer({'ru':'Язык изменён.','uk':'Мову змінено.','en':'Language changed.'}[lang], reply_markup=reply_menu(is_admin, lang))
     await callback.answer()
 
@@ -692,23 +751,31 @@ async def post_with_schedule_button(callback: CallbackQuery):
         
         # Отправляем пост всем пользователям с кнопкой
         sent_count = 0
+        failed_count = 0
         for u in users:
             try:
                 user_lang = u['lang'] if u['lang'] else 'ru'
+                user_id_db = u['user_id']
+                
+                print(f"Sending post to user {user_id_db}, lang: {user_lang}")
                 
                 # Переводим текст поста на язык пользователя
                 translated_post = await translate_text(post_text, user_lang)
+                
+                print(f"Original: '{post_text[:30]}...', Translated ({user_lang}): '{translated_post[:30]}...'")
                 
                 # Создаем кнопку расписания на языке пользователя
                 schedule_button = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text={'ru':'📅 Расписание','uk':'📅 Розклад','en':'📅 Schedule'}[user_lang], callback_data='main_schedule')]
                 ])
                 
-                await bot.send_message(u['user_id'], translated_post, reply_markup=schedule_button)
+                await bot.send_message(user_id_db, translated_post, reply_markup=schedule_button)
                 sent_count += 1
             except Exception as e:
-                print(f"Failed to send post to user {u['user_id']}: {e}")
+                failed_count += 1
+                print(f"Failed to send post to user {u['user_id']} (lang: {u.get('lang', 'None')}): {e}")
         
+        print(f"Post delivery summary: {sent_count} sent, {failed_count} failed")
         user_states.pop(user_id, None)
         await callback.message.answer({'ru':f'Пост с кнопкой отправлен {sent_count} пользователям!\n📝 Текст автоматически переведен на выбранный язык каждого пользователя.','uk':f'Пост з кнопкою надіслано {sent_count} користувачам!\n📝 Текст автоматично перекладено на обрану мову кожного користувача.','en':f'Post with button sent to {sent_count} users!\n📝 Text automatically translated to each user\'s selected language.'}[lang], reply_markup=reply_menu(True, lang))
     except Exception as e:
@@ -744,18 +811,26 @@ async def post_without_button(callback: CallbackQuery):
         
         # Отправляем пост всем пользователям без кнопки
         sent_count = 0
+        failed_count = 0
         for u in users:
             try:
                 user_lang = u['lang'] if u['lang'] else 'ru'
+                user_id_db = u['user_id']
+                
+                print(f"Sending post to user {user_id_db}, lang: {user_lang}")
                 
                 # Переводим текст поста на язык пользователя
                 translated_post = await translate_text(post_text, user_lang)
                 
-                await bot.send_message(u['user_id'], translated_post)
+                print(f"Original: '{post_text[:30]}...', Translated ({user_lang}): '{translated_post[:30]}...'")
+                
+                await bot.send_message(user_id_db, translated_post)
                 sent_count += 1
             except Exception as e:
-                print(f"Failed to send post to user {u['user_id']}: {e}")
+                failed_count += 1
+                print(f"Failed to send post to user {u['user_id']} (lang: {u.get('lang', 'None')}): {e}")
         
+        print(f"Post delivery summary: {sent_count} sent, {failed_count} failed")
         user_states.pop(user_id, None)
         await callback.message.answer({'ru':f'Пост отправлен {sent_count} пользователям!\n📝 Текст автоматически переведен на выбранный язык каждого пользователя.','uk':f'Пост надіслано {sent_count} користувачам!\n📝 Текст автоматично перекладено на обрану мову кожного користувача.','en':f'Post sent to {sent_count} users!\n📝 Text automatically translated to each user\'s selected language.'}[lang], reply_markup=reply_menu(True, lang))
     except Exception as e:
