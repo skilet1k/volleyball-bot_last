@@ -83,7 +83,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
 import datetime
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or '7552454167:AAGJCiF2yiQ-oMokKORBHosgdAHzgLei74U'
 
@@ -107,9 +107,6 @@ dp = Dispatcher()
 user_states = {}
 add_game_states = {}
 
-# Инициализируем переводчик
-translator = Translator()
-
 async def translate_text(text, target_lang):
     """Переводит текст на указанный язык"""
     try:
@@ -122,17 +119,13 @@ async def translate_text(text, target_lang):
         
         target_code = lang_codes.get(target_lang, 'ru')
         
-        # Определяем исходный язык текста
-        detected = translator.detect(text)
-        source_lang = detected.lang
+        # Используем deep-translator для перевода
+        # Создаем переводчик с автоопределением исходного языка
+        translator = GoogleTranslator(source='auto', target=target_code)
+        translated = translator.translate(text)
         
-        # Если исходный язык уже совпадает с целевым, возвращаем оригинал
-        if source_lang == target_code:
-            return text
-        
-        # Переводим текст
-        translated = translator.translate(text, src=source_lang, dest=target_code)
-        return translated.text
+        # Если перевод вернул тот же текст, это может означать что язык уже правильный
+        return translated
     except Exception as e:
         print(f"Translation error: {e}")
         # Если перевод не удался, возвращаем оригинальный текст
