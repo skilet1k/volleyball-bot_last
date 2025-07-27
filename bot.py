@@ -1,3 +1,26 @@
+import os
+import asyncio
+import datetime
+import asyncpg
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, ReplyKeyboardMarkup, KeyboardButton
+
+try:
+    import deepl
+    DEEPL_AVAILABLE = True
+except ImportError:
+    DEEPL_AVAILABLE = False
+from deep_translator import GoogleTranslator
+
+# Веб-сервер для деплоя
+try:
+    from aiohttp import web
+    import aiohttp
+    WEB_AVAILABLE = True
+except ImportError:
+    WEB_AVAILABLE = False
+
 async def init_db():
     pool = await get_pg_pool()
     async with pool.acquire() as conn:
@@ -331,14 +354,21 @@ async def create_post_menu(message: Message):
     # Очищаем состояние добавления игры при переходе к другому действию
     clear_add_game_state(message.from_user.id)
     
-    lang = get_lang(message.from_user.id)
+    user_id = message.from_user.id
+    
+    # Убеждаемся, что язык пользователя загружен
+    lang = await ensure_user_lang(user_id)
+    
     if message.from_user.id not in ADMIN_IDS:
         await message.answer(TEXTS['no_access'][lang])
         return
-    user_id = message.from_user.id
-    # Preserve language in state if already set
-    lang_state = user_states.get(user_id, {}).get('lang', lang)
-    user_states[user_id] = {'step': 'create_post', 'lang': lang_state}
+    
+    # Сохраняем состояние с правильным языком
+    if user_id not in user_states:
+        user_states[user_id] = {}
+    user_states[user_id]['step'] = 'create_post'
+    user_states[user_id]['lang'] = lang  # Убеждаемся что язык сохранен правильно
+    
     await message.answer({'ru':'Введите текст поста:','uk':'Введіть текст поста:','en':'Enter post text:'}[lang])
 
 # --- Create post step handler ---
@@ -815,8 +845,11 @@ async def skip_extra_info(callback: CallbackQuery):
 async def post_with_schedule_button(callback: CallbackQuery):
     try:
         await callback.answer()  # Отвечаем сразу
-        lang = get_lang(callback.from_user.id)
         user_id = callback.from_user.id
+        
+        # Убеждаемся, что язык пользователя загружен правильно
+        lang = await ensure_user_lang(user_id)
+        
         state = user_states.get(user_id)
         
         if not state or state.get('step') != 'post_button_choice':
@@ -865,7 +898,7 @@ async def post_with_schedule_button(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in post_with_schedule_button: {e}")
         try:
-            lang = get_lang(callback.from_user.id)
+            lang = await ensure_user_lang(callback.from_user.id)
             await callback.answer(TEXTS['error_sending_post'][lang])
             await callback.message.answer(TEXTS['error_sending_post'][lang], reply_markup=reply_menu(True, lang))
         except:
@@ -875,8 +908,11 @@ async def post_with_schedule_button(callback: CallbackQuery):
 async def post_without_button(callback: CallbackQuery):
     try:
         await callback.answer()  # Отвечаем сразу
-        lang = get_lang(callback.from_user.id)
         user_id = callback.from_user.id
+        
+        # Убеждаемся, что язык пользователя загружен правильно
+        lang = await ensure_user_lang(user_id)
+        
         state = user_states.get(user_id)
         
         if not state or state.get('step') != 'post_button_choice':
@@ -920,7 +956,7 @@ async def post_without_button(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in post_without_button: {e}")
         try:
-            lang = get_lang(callback.from_user.id)
+            lang = await ensure_user_lang(callback.from_user.id)
             await callback.answer(TEXTS['error_sending_post'][lang])
             await callback.message.answer(TEXTS['error_sending_post'][lang], reply_markup=reply_menu(True, lang))
         except:
@@ -1502,6 +1538,11 @@ if __name__ == "__main__":
                 await dp.start_polling(bot, skip_updates=True)
 
         asyncio.run(main())
-    else:
-        # Локальная разработка - только бот
-        dp.run_polling(bot)
+else:
+    # Локальная разработка - только бот
+    async def local_main():
+        await init_db()
+        print("Bot initialized and database connected!")
+        await dp.start_polling(bot, skip_updates=True)
+    
+    asyncio.run(local_main())
