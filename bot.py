@@ -139,14 +139,15 @@ async def main_schedule_btn(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in main_schedule_btn: {e}")
         try:
-            await callback.answer("Произошла ошибка при загрузке расписания")
+            lang = get_lang(callback.from_user.id)
+            await callback.answer(TEXTS['error_loading_schedule'][lang])
         except:
             pass
         # Перезапускаем меню
         try:
             lang = get_lang(callback.from_user.id)
             is_admin = callback.from_user.id in ADMIN_IDS
-            await callback.message.answer("Выберите действие:", reply_markup=reply_menu(is_admin, lang))
+            await callback.message.answer(TEXTS['choose_action'][lang], reply_markup=reply_menu(is_admin, lang))
         except Exception as fallback_error:
             print(f"Fallback error in main_schedule_btn: {fallback_error}")
 # PostgreSQL pool helper
@@ -335,6 +336,21 @@ TEXTS = {
         'ru': "Статус оплаты изменён на",
         'uk': "Статус оплати змінено на",
         'en': "Payment status changed to"
+    },
+    'error_loading_schedule': {
+        'ru': "Произошла ошибка при загрузке расписания",
+        'uk': "Сталася помилка при завантаженні розкладу", 
+        'en': "Error loading schedule"
+    },
+    'error_sending_post': {
+        'ru': "Произошла ошибка при отправке поста",
+        'uk': "Сталася помилка при надсиланні поста",
+        'en': "Error sending post"
+    },
+    'unknown_callback': {
+        'ru': "Неизвестная команда",
+        'uk': "Невідома команда",
+        'en': "Unknown command"
     }
 }
 
@@ -698,9 +714,9 @@ async def post_with_schedule_button(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in post_with_schedule_button: {e}")
         try:
-            await callback.answer("Произошла ошибка при отправке поста")
             lang = get_lang(callback.from_user.id)
-            await callback.message.answer({'ru':'Произошла ошибка при отправке поста','uk':'Сталася помилка при надсиланні поста','en':'Error sending post'}[lang], reply_markup=reply_menu(True, lang))
+            await callback.answer(TEXTS['error_sending_post'][lang])
+            await callback.message.answer(TEXTS['error_sending_post'][lang], reply_markup=reply_menu(True, lang))
         except:
             pass
 
@@ -745,9 +761,9 @@ async def post_without_button(callback: CallbackQuery):
     except Exception as e:
         print(f"Error in post_without_button: {e}")
         try:
-            await callback.answer("Произошла ошибка при отправке поста")
             lang = get_lang(callback.from_user.id)
-            await callback.message.answer({'ru':'Произошла ошибка при отправке поста','uk':'Сталася помилка при надсиланні поста','en':'Error sending post'}[lang], reply_markup=reply_menu(True, lang))
+            await callback.answer(TEXTS['error_sending_post'][lang])
+            await callback.message.answer(TEXTS['error_sending_post'][lang], reply_markup=reply_menu(True, lang))
         except:
             pass
 
@@ -880,7 +896,7 @@ async def edit_schedule_mode(callback: CallbackQuery):
             game_id, date, time_start, time_end, place = game['id'], game['date'], game['time_start'], game['time_end'], game['place']
             kb_rows.append([InlineKeyboardButton(text=f"{date} {time_start}-{time_end} {place}", callback_data=f'editgame_{game_id}')])
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
-        await callback.message.answer('Выберите игру для редактирования:', reply_markup=kb)
+        await callback.message.answer({'ru':'Выберите игру для редактирования:','uk':'Виберіть гру для редагування:','en':'Choose game to edit:'}[lang], reply_markup=kb)
 
 @dp.callback_query(F.data.startswith('editgame_'))
 async def editgame(callback: CallbackQuery):
@@ -1238,10 +1254,10 @@ if __name__ == "__main__":
     async def catch_all_callback_query(callback: CallbackQuery):
         try:
             # Если callback не был обработан выше, отвечаем на него
-            await callback.answer("Неизвестная команда")
             lang = get_lang(callback.from_user.id)
+            await callback.answer(TEXTS['unknown_callback'][lang])
             is_admin = callback.from_user.id in ADMIN_IDS
-            await callback.message.answer({'ru':'Неизвестная команда. Пожалуйста, выберите действие:','uk':'Невідома команда. Будь ласка, виберіть дію:','en':'Unknown command. Please choose an action:'}[lang], reply_markup=reply_menu(is_admin, lang))
+            await callback.message.answer(TEXTS['unknown_command'][lang], reply_markup=reply_menu(is_admin, lang))
         except Exception as e:
             print(f"Error in catch_all_callback_query: {e}")
 
